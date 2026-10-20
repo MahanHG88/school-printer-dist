@@ -9,20 +9,21 @@
 #   macOS: /Library/Application Support/SchoolPrinter + LaunchDaemon com.mahanmirzaee.schoolprinter
 #   Linux: /opt/schoolprinter + systemd unit schoolprinter.service (+ ufw/firewalld rule, LAN only)
 #   Both:  runs as user "nobody", port 8631, "School Printer (Admin)" shortcut on the desktop
-# Works with the bash 3.2 that macOS ships (no associative arrays, no EPOCHREALTIME).
+# Works with the bash 3.2 that macOS ships (no associative arrays, no EPOCHREALTIME). Always write ${VAR} before a
+# non-ASCII character: in a UTF-8 locale bash 3.2 reads "$MU·" as a variable named "MU·" (seen 2026-10-20).
 set -euo pipefail
 
-VERSION="1.4.1"
-BASE="https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.4.1/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+VERSION="1.4.2"
+BASE="https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.4.2/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
 PORT=8631
-FILES=("unix/schoolprinter.pl:7F6051B7A0218A29AEE3F4CD934BE8BC6B47D4B70413068CE6AB82124E0B046D:22754" "web/admin.html:A7E2E46BD3410D895F8BE56CD6C3D0CB7C58CFAC9FF4C58216A029E5DAF8211A:3575" "web/admin.js:18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5:3804" "web/app.css:08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50:12608" "web/i18n.js:7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928:11527" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:5640AC95518D3E0DA1E40C2E366C469C67A3199C2D27311A4383B5EC0480D40C:5318" "web/print.js:F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE:19109")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:7F6051B7A0218A29AEE3F4CD934BE8BC6B47D4B70413068CE6AB82124E0B046D:22754" "web/admin.html:D1C878B166869603230E073749473897DF6D54CFC7BF2D3F9854FE4B46B27D7E:3575" "web/admin.js:18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5:3804" "web/app.css:08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50:12608" "web/i18n.js:7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928:11527" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:6656D92F2ECEAA84FD69095E39DE68965910BE6A046A3E0ADFF6F3861A2D79EB:5318" "web/print.js:F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE:19109")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
 # ================================================================ look: live dashboard
 TTY=0; [ -t 1 ] && TTY=1
-E=$'\e'; R="$E[0m"; B="$E[1m"; D="$E[2m"
-OK="$E[38;5;42m"; WN="$E[38;5;214m"; ER="$E[38;5;203m"; AC="$E[38;5;105m"; MU="$E[38;5;244m"; BR="$E[38;5;60m"
+E=$'\e'; R="${E}[0m"; B="${E}[1m"; D="${E}[2m"
+OK="${E}[38;5;42m"; WN="${E}[38;5;214m"; ER="${E}[38;5;203m"; AC="${E}[38;5;105m"; MU="${E}[38;5;244m"; BR="${E}[38;5;60m"
 GRAD=(63 63 99 99 135 135 171 171 207 205)          # brand gradient: indigo -> violet -> pink (256 colours)
 SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time*1000'; }
@@ -31,7 +32,7 @@ kb() { local t w f g=""; t=$(( ($1 * 10 + 512) / 1024 )); w=$((t / 10)); f=$((t 
 kbps() { local ms=$2; (( ms < 1 )) && ms=1; local t=$(( $1 * 10000 / 1024 / ms )); echo "$((t / 10)).$((t % 10)) KB/s"; }   # bytes, ms
 secs() { local ms=$1 s; s=$(( (ms + 999) / 1000 )); if (( ms < 1000 )); then echo "<1 s"; elif (( s < 90 )); then echo "$s s"; else printf '%dm %02ds' $((s / 60)) $((s % 60)); fi; }
 tenths() { echo "$(($1 / 1000)).$(( ($1 % 1000) / 100 ))s"; }
-grad() { local t="$1" i out=""; for (( i = 0; i < ${#t}; i++ )); do out+="$E[38;5;${GRAD[$(( i * ${#GRAD[@]} / ${#t} ))]}m${t:$i:1}"; done; printf '%s%s' "$out" "$R"; }
+grad() { local t="$1" i out=""; for (( i = 0; i < ${#t}; i++ )); do out+="${E}[38;5;${GRAD[$(( i * ${#GRAD[@]} / ${#t} ))]}m${t:$i:1}"; done; printf '%s%s' "$out" "${R}"; }
 
 S_ID=(); S_TITLE=(); S_EST=(); S_STATE=(); S_DETAIL=(); S_T0=(); S_EL=(); S_FRAC=()
 add_step() { S_ID+=("$1"); S_TITLE+=("$2"); S_EST+=("$3"); S_STATE+=(pending); S_DETAIL+=(""); S_T0+=(0); S_EL+=(0); S_FRAC+=(0); }
@@ -54,22 +55,22 @@ draw() {
     LAST=$now; FRAME=$((FRAME + 1))
     local cols det; cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}'); [ -n "$cols" ] || cols=${COLUMNS:-80}; ROOM=$(( cols > 57 ? cols - 47 : 10 ))
     local out="" n=0 i st el ic tm tc ti total=0 dn=0 rem=0 f p pct w=34 fill bar=""
-    (( DRAWN > 0 )) && out+="$E[${DRAWN}A"
-    for p in "${PLAN[@]}"; do out+=$'\r'"$E[2K   $p"$'\n'; n=$((n + 1)); done
-    out+=$'\r'"$E[2K"$'\n'; n=$((n + 1))
+    (( DRAWN > 0 )) && out+="${E}[${DRAWN}A"
+    for p in "${PLAN[@]}"; do out+=$'\r'"${E}[2K   $p"$'\n'; n=$((n + 1)); done
+    out+=$'\r'"${E}[2K"$'\n'; n=$((n + 1))
     for (( i = 0; i < ${#S_ID[@]}; i++ )); do
         st=${S_STATE[$i]}
         if [ "$st" = active ]; then el=$((now - S_T0[i])); else el=${S_EL[$i]}; fi
         ti="$(printf '%-28s' "${S_TITLE[$i]}")"
         case $st in
-            pending) ic="$MU·$R"; if (( S_EST[i] < 1000 )); then tm="<1 s"; else tm="~$(secs ${S_EST[$i]})"; fi; tc=$MU; ti="$MU$ti$R" ;;
-            active)  ic="$AC${SPIN[$((FRAME % 10))]}$R"; tm="$(tenths $el)"; tc=$AC; ti="$B$ti$R" ;;
-            done)    ic="$OK✓$R"; tm="$(tenths $el)"; tc=$D ;;
-            warn)    ic="$WN!$R"; tm="$(tenths $el)"; tc=$D ;;
-            fail)    ic="$ER✗$R"; tm="$(tenths $el)"; tc=$D; ti="$ER$ti$R" ;;
+            pending) ic="${MU}·${R}"; if (( S_EST[i] < 1000 )); then tm="<1 s"; else tm="~$(secs ${S_EST[$i]})"; fi; tc=${MU}; ti="${MU}$ti${R}" ;;
+            active)  ic="${AC}${SPIN[$((FRAME % 10))]}${R}"; tm="$(tenths $el)"; tc=${AC}; ti="${B}$ti${R}" ;;
+            done)    ic="${OK}✓${R}"; tm="$(tenths $el)"; tc=${D} ;;
+            warn)    ic="${WN}!${R}"; tm="$(tenths $el)"; tc=${D} ;;
+            fail)    ic="${ER}✗${R}"; tm="$(tenths $el)"; tc=${D}; ti="${ER}$ti${R}" ;;
         esac
         det="${S_DETAIL[$i]}"; if (( ${#det} > ROOM )); then det="${det:0:$((ROOM - 1))}…"; fi    # never wrap: wrapping breaks the redraw
-        out+=$'\r'"$E[2K   $ic  $ti $tc$(printf '%7s' "$tm")$R   $D$det$R"$'\n'; n=$((n + 1))
+        out+=$'\r'"${E}[2K   $ic  $ti $tc$(printf '%7s' "$tm")${R}   ${D}$det${R}"$'\n'; n=$((n + 1))
         total=$((total + S_EST[i]))
         case $st in
             done|warn) dn=$((dn + S_EST[i])) ;;
@@ -78,11 +79,11 @@ draw() {
             pending) rem=$((rem + S_EST[i])) ;;
         esac
     done
-    out+=$'\r'"$E[2K"$'\n'; n=$((n + 1))
+    out+=$'\r'"${E}[2K"$'\n'; n=$((n + 1))
     pct=$(( dn * 100 / (total > 0 ? total : 1) )); (( pct > 100 )) && pct=100
     fill=$(( w * pct / 100 ))
-    for (( i = 0; i < w; i++ )); do if (( i < fill )); then bar+="$E[38;5;${GRAD[$(( i * ${#GRAD[@]} / w ))]}m█"; else bar+="$E[38;5;237m░"; fi; done
-    out+=$'\r'"$E[2K   $bar$R  $B$(printf '%3d' $pct)%$R   $D~$(secs $rem) left  ·  $(secs $((now - T0))) elapsed$R"$'\n'; n=$((n + 1))
+    for (( i = 0; i < w; i++ )); do if (( i < fill )); then bar+="${E}[38;5;${GRAD[$(( i * ${#GRAD[@]} / w ))]}m█"; else bar+="${E}[38;5;237m░"; fi; done
+    out+=$'\r'"${E}[2K   $bar${R}  ${B}$(printf '%3d' $pct)%${R}   ${D}~$(secs $rem) left  ·  $(secs $((now - T0))) elapsed${R}"$'\n'; n=$((n + 1))
     DRAWN=$n
     printf '%s' "$out"
 }
@@ -92,22 +93,22 @@ finish() {
     local i; i=$(ix "$1"); S_STATE[$i]=${3:-done}; S_EL[$i]=$(( $(now_ms) - S_T0[i] )); S_DETAIL[$i]="${2:-}"
     if [ $TTY = 1 ]; then draw force; else printf '  [%s] %s (%s) %s\n' "${S_STATE[$i]}" "${S_TITLE[$i]}" "$(tenths ${S_EL[$i]})" "${S_DETAIL[$i]}"; fi
 }
-fail() { finish "$1" "$2" fail; printf '\n   %s✗  %s%s\n' "$ER" "$2" "$R"; [ -n "${3:-}" ] && printf '      %s\n' "$3"; printf '\n'; exit 1; }
+fail() { finish "$1" "$2" fail; printf '\n   %s✗  %s%s\n' "${ER}" "$2" "${R}"; [ -n "${3:-}" ] && printf '      %s\n' "$3"; printf '\n'; exit 1; }
 ask() {    # ask "question" line1 line2 ... -> answer on stdout; the lines disappear afterwards
     local q="$1" a k l; shift; k=$(( $# + 1 ))
     for l in "$@"; do printf '   %s\n' "$l" >&2; done
-    printf '   %s?%s  %s ' "$AC" "$R" "$q" >&2; read -r a </dev/tty || a=""
-    [ $TTY = 1 ] && printf '%s[%dA%s[J' "$E" "$k" "$E" >&2
+    printf '   %s?%s  %s ' "${AC}" "${R}" "$q" >&2; read -r a </dev/tty || a=""
+    [ $TTY = 1 ] && printf '%s[%dA%s[J' "${E}" "$k" "${E}" >&2
     printf '%s' "$a"
 }
 header() {
-    local h="" t1="School Printer" t1r="installer $VERSION" t2="$1  ·  print.mahanmirzaee.com" i w
+    local h="" t1="School Printer" t1r="installer $VERSION" t2="$1" i w   # $1 = system  ·  download source
     w=$(( ${#t2} + 4 > 62 ? ${#t2} + 4 : 62 ))
     for (( i = 0; i < w; i++ )); do h+="─"; done
-    printf '\n  %s┌%s┐%s\n' "$BR" "$h" "$R"
-    printf '  %s│%s  %s%s%s%*s%s%s%s  %s│%s\n' "$BR" "$R" "$B" "$(grad "$t1")" "$R" $(( w - 4 - ${#t1} - ${#t1r} )) "" "$D" "$t1r" "$R" "$BR" "$R"
-    printf '  %s│%s  %s%-*s%s  %s│%s\n' "$BR" "$R" "$D" $(( w - 3 )) "$t2" "$R" "$BR" "$R"
-    printf '  %s└%s┘%s\n\n' "$BR" "$h" "$R"
+    printf '\n  %s┌%s┐%s\n' "${BR}" "$h" "${R}"
+    printf '  %s│%s  %s%s%s%*s%s%s%s  %s│%s\n' "${BR}" "${R}" "${B}" "$(grad "$t1")" "${R}" $(( w - 4 - ${#t1} - ${#t1r} )) "" "${D}" "$t1r" "${R}" "${BR}" "${R}"
+    printf '  %s│%s  %s%-*s%s  %s│%s\n' "${BR}" "${R}" "${D}" $(( w - 3 )) "$t2" "${R}" "${BR}" "${R}"
+    printf '  %s└%s┘%s\n\n' "${BR}" "$h" "${R}"
 }
 
 # ================================================================ start
@@ -115,14 +116,14 @@ HERE=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; fi
 if [ "$(id -u)" -ne 0 ]; then
     if [ -n "$HERE" ]; then echo "School Printer needs your password to install."; exec sudo bash "${BASH_SOURCE[0]}"; fi
-    echo "Run it with sudo:  curl -fsSL https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.4.1/install-ir.sh | sudo bash"; exit 1
+    echo "Run it with sudo:  curl -fsSL https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.4.2/install-ir.sh | sudo bash"; exit 1
 fi
 command -v perl >/dev/null || { echo "Perl is missing - install it (e.g. sudo apt install perl) and run this again."; exit 1; }
 tmpd="$(mktemp -d)"
-cleanup() { rm -rf "$tmpd"; [ $TTY = 1 ] && printf '%s[?25h' "$E"; return 0; }
+cleanup() { rm -rf "$tmpd"; [ $TTY = 1 ] && printf '%s[?25h' "${E}"; return 0; }
 trap cleanup EXIT
-[ $TTY = 1 ] && printf '%s[?25l' "$E"
-if [ "$OS" = Darwin ]; then header "macOS $(sw_vers -productVersion)  ·  jsDelivr mirror"; else header "$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || echo Linux)  ·  jsDelivr mirror"; fi
+[ $TTY = 1 ] && printf '%s[?25l' "${E}"
+if [ "$OS" = Darwin ]; then header "macOS $(sw_vers -productVersion)  ·  jsDelivr mirror (Iran)"; else header "$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || echo Linux)  ·  jsDelivr mirror (Iran)"; fi
 draw force
 
 # ---------------------------------------------------------------- 1. check
@@ -149,7 +150,7 @@ if [ -n "$LOCAL" ]; then finish net "offline install - using the files next to t
 elif [ ${#NEED[@]} -eq 0 ]; then finish net "skipped - all files already up to date"
 else
     m="$(curl -fsS -o /dev/null -w '%{size_download} %{time_starttransfer} %{time_total}' "$BASE/probe.bin?t=$RANDOM$RANDOM" 2>/dev/null)" \
-        || fail net "Could not reach the download server (jsDelivr mirror)." "Plan B: download SchoolPrinter-mac-linux.zip from print.mahanmirzaee.com on any device, copy it here, unzip, and run: sudo bash install.sh"
+        || fail net "Could not reach the download server (jsDelivr mirror (Iran))." "Plan B: download SchoolPrinter-mac-linux.zip from print.mahanmirzaee.com on any device, copy it here, unzip, and run: sudo bash install.sh"
     read -r PB PST PTT <<< "$m"
     LAT=$(awk -v s="$PST" 'BEGIN{printf "%d", s*1000}'); XFER=$(awk -v a="$PST" -v b="$PTT" 'BEGIN{x=(b-a)*1000; if (x<1) x=1; printf "%d", x}')
     NET_KBPS_T=$(( PB * 10000 / 1024 / XFER ))     # tenths of KB/s
@@ -159,8 +160,8 @@ fi_=$(ix files)
 if (( NET_KBPS_T > 0 )); then S_EST[$fi_]=$(( NEED_BYTES * 10000 / 1024 / NET_KBPS_T + ${#NEED[@]} * LAT + 300 ))
 elif [ ${#NEED[@]} -gt 0 ]; then S_EST[$fi_]=500; else S_EST[$fi_]=200; fi
 TOTAL_EST=0; for e in "${S_EST[@]}"; do TOTAL_EST=$((TOTAL_EST + e)); done
-if (( NET_KBPS_T > 0 )); then netline="$B$((NET_KBPS_T / 10)).$((NET_KBPS_T % 10)) KB/s$R  $D·  ${LAT} ms latency$R"; elif [ -n "$LOCAL" ]; then netline="${D}offline (zip)$R"; else netline="${D}not needed$R"; fi
-PLAN=("${MU}Network    $R$netline" "${MU}Download   $R$B$(kb $NEED_BYTES)$R$D  in ${#NEED[@]} of ${#FILES[@]} files  ·  $(kb $ALL_BYTES) in total$R" "${MU}Estimate   $R$B~$(secs $TOTAL_EST)$R$D  for all ${#S_ID[@]} steps$R")
+if (( NET_KBPS_T > 0 )); then netline="${B}$((NET_KBPS_T / 10)).$((NET_KBPS_T % 10)) KB/s${R}  ${D}·  ${LAT} ms latency${R}"; elif [ -n "$LOCAL" ]; then netline="${D}offline (zip)${R}"; else netline="${D}not needed${R}"; fi
+PLAN=("${MU}Network    ${R}$netline" "${MU}Download   ${R}${B}$(kb $NEED_BYTES)${R}${D}  in ${#NEED[@]} of ${#FILES[@]} files  ·  $(kb $ALL_BYTES) in total${R}" "${MU}Estimate   ${R}${B}~$(secs $TOTAL_EST)${R}${D}  for all ${#S_ID[@]} steps${R}")
 draw force
 
 # ---------------------------------------------------------------- 3. files
@@ -203,7 +204,7 @@ elif [ "${#list[@]}" -eq 0 ]; then fail printer "No printers are set up on this 
 elif [ "${#list[@]}" -eq 1 ]; then printer="${list[0]}"
 else
     def="$(lpstat -d 2>/dev/null | sed -n 's/^.*: //p')"; lines=("${B}Which printer should everyone use?${R}")
-    for i in "${!list[@]}"; do m=""; [ "${list[$i]}" = "$def" ] && m="  ${D}(default)${R}"; lines+=("   $AC$((i + 1))$R  ${list[$i]}$m"); done
+    for i in "${!list[@]}"; do m=""; [ "${list[$i]}" = "$def" ] && m="  ${D}(default)${R}"; lines+=("   ${AC}$((i + 1))${R}  ${list[$i]}$m"); done
     while :; do
         a="$(ask "Number:" "${lines[@]}")"
         if [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 1 ] && [ "$a" -le "${#list[@]}" ]; then printer="${list[$((a - 1))]}"; break; fi
@@ -311,8 +312,8 @@ finish verify "answered in ${vms} ms"
 TOOK=$(( $(now_ms) - T0 ))
 if [ "$OS" = Darwin ]; then ips=$(for i in 0 1 2 3 4 5 6 7 8; do ipconfig getifaddr en$i 2>/dev/null || true; done)
 else ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr)/ {sub(/\/.*/,"",$4); print $4}'); fi
-printf '\n   %s✓%s  %s%s%s   %s%s  (estimated ~%s)%s\n\n' "$OK" "$R" "$B" "$(grad 'School Printer is running')" "$R" "$D" "$(tenths $TOOK)" "$(secs $TOTAL_EST)" "$R"
-printf '   %sOn every other device%s, type this in the browser:\n' "$B" "$R"
+printf '\n   %s✓%s  %s%s%s   %s%s  (estimated ~%s)%s\n\n' "${OK}" "${R}" "${B}" "$(grad 'School Printer is running')" "${R}" "${D}" "$(tenths $TOOK)" "$(secs $TOTAL_EST)" "${R}"
+printf '   %sOn every other device%s, type this in the browser:\n' "${B}" "${R}"
 for ip in $ips; do printf '      %s\n' "$(grad "http://$ip:$PORT")"; done
-printf '\n   %sOn this computer%s: double-click %s"School Printer (Admin)"%s on the desktop.\n\n' "$B" "$R" "$B" "$R"
+printf '\n   %sOn this computer%s: double-click %s"School Printer (Admin)"%s on the desktop.\n\n' "${B}" "${R}" "${B}" "${R}"
 if [ "$OS" = Darwin ] && [ -n "${u:-}" ] && [ "$u" != root ]; then launchctl asuser "$(id -u "$u")" sudo -u "$u" open "http://localhost:$PORT/admin" 2>/dev/null || true; fi

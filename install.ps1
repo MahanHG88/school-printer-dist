@@ -16,7 +16,7 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.4.1'
+    $Version = '1.4.2'
     $Base    = 'https://print.mahanmirzaee.com/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
@@ -24,13 +24,13 @@ function Install-SchoolPrinter {
         'win/PrintServer.ps1' = @('E89EAD0D9EE39E00641CA26D4E47F32A0B71E1C7D4D371D167B8EC52FE66DFD7', 20161)
         'win/watch.ps1' = @('1CECCD69D589EA2B0EF909D247C6FBBB16CA8D945CD6F4E99F491629BFD78827', 11962)
         'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
-        'web/admin.html' = @('A7E2E46BD3410D895F8BE56CD6C3D0CB7C58CFAC9FF4C58216A029E5DAF8211A', 3575)
+        'web/admin.html' = @('D1C878B166869603230E073749473897DF6D54CFC7BF2D3F9854FE4B46B27D7E', 3575)
         'web/admin.js' = @('18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5', 3804)
         'web/app.css' = @('08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50', 12608)
         'web/i18n.js' = @('7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928', 11527)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('5640AC95518D3E0DA1E40C2E366C469C67A3199C2D27311A4383B5EC0480D40C', 5318)
+        'web/print.html' = @('6656D92F2ECEAA84FD69095E39DE68965910BE6A046A3E0ADFF6F3861A2D79EB', 5318)
         'web/print.js' = @('F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE', 19109)
     }
     $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://print.mahanmirzaee.com/install.ps1'))"
@@ -127,7 +127,7 @@ function Install-SchoolPrinter {
     }
     function Header($sub) {
         $h = [string][char]0x2500; $v = [string][char]0x2502
-        $t1 = 'School Printer'; $t1r = "installer $Version"; $t2 = "$sub  $dot  print.mahanmirzaee.com"; $w = [math]::Max(62, $t2.Length + 4)
+        $t1 = 'School Printer'; $t1r = "installer $Version"; $t2 = $sub   # system  ·  download source; $w = [math]::Max(62, $t2.Length + 4)
         Write-Host ''
         Write-Host "  $MU$([char]0x250C)$($h * $w)$([char]0x2510)$R"
         Write-Host "  $MU$v$R  $B$(Grad $t1)$R$(' ' * [math]::Max(1, $w - 4 - $t1.Length - $t1r.Length))$D$t1r$R  $MU$v$R"
@@ -177,7 +177,7 @@ function Install-SchoolPrinter {
     try { $host.UI.RawUI.WindowTitle = 'School Printer installer' } catch {}
     try { [Console]::CursorVisible = $false } catch {}
     $os = (Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue).Caption -replace '^Microsoft ', ''
-    Header "$os  $dot  print.mahanmirzaee.com"
+    Header "$os  $dot  direct from print.mahanmirzaee.com"
     try {
     Draw -Force
 
@@ -204,7 +204,7 @@ function Install-SchoolPrinter {
     elseif ($need.Count -eq 0) { Finish 'net' 'skipped - all files already up to date' }
     else {
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $net = Measure-Net }
-        catch { Fail 'net' 'Could not reach the download server (print.mahanmirzaee.com).' 'Plan B: download SchoolPrinter-windows.zip from print.mahanmirzaee.com on any device, copy it here (a USB stick is fine), unzip it and double-click Install.cmd.'; return }
+        catch { Fail 'net' 'Could not reach the download server (direct from print.mahanmirzaee.com).' 'Plan B: download SchoolPrinter-windows.zip from print.mahanmirzaee.com on any device, copy it here (a USB stick is fine), unzip it and double-click Install.cmd.'; return }
         Finish 'net' ("{0:N1} KB/s  $dot  {1:N0} ms latency  $dot  measured with {2}" -f $net.kbps, ($net.lat * 1000), (KB $net.bytes))
     }
     $Steps.files.est = if ($net) { ($needBytes / 1024) / [math]::Max(1, $net.kbps) + $need.Count * $net.lat + 0.3 } elseif ($need.Count) { 0.5 } else { 0.2 }
