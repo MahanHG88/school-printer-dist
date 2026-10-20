@@ -12,10 +12,10 @@
 # Works with the bash 3.2 that macOS ships (no associative arrays, no EPOCHREALTIME).
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 BASE="https://print.mahanmirzaee.com/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
 PORT=8631
-FILES=("unix/schoolprinter.pl:7F6051B7A0218A29AEE3F4CD934BE8BC6B47D4B70413068CE6AB82124E0B046D:22754" "web/admin.html:9916FC55C2003477400CE4777D28DEBE6AD4E2781F9EFAAADA9A25234932848F:3575" "web/admin.js:18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5:3804" "web/app.css:08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50:12608" "web/i18n.js:7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928:11527" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:5031F5CD5B5CFCB098BDB34A5E0D68F0AC36E02A4B035E88B6D6F0F082068471:5318" "web/print.js:F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE:19109")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:7F6051B7A0218A29AEE3F4CD934BE8BC6B47D4B70413068CE6AB82124E0B046D:22754" "web/admin.html:A7E2E46BD3410D895F8BE56CD6C3D0CB7C58CFAC9FF4C58216A029E5DAF8211A:3575" "web/admin.js:18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5:3804" "web/app.css:08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50:12608" "web/i18n.js:7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928:11527" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:5640AC95518D3E0DA1E40C2E366C469C67A3199C2D27311A4383B5EC0480D40C:5318" "web/print.js:F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE:19109")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
@@ -52,6 +52,7 @@ draw() {
     local now; now=$(now_ms)
     if [ -z "${1:-}" ] && (( now - LAST < 100 )); then return 0; fi
     LAST=$now; FRAME=$((FRAME + 1))
+    local cols det; cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}'); [ -n "$cols" ] || cols=${COLUMNS:-80}; ROOM=$(( cols > 57 ? cols - 47 : 10 ))
     local out="" n=0 i st el ic tm tc ti total=0 dn=0 rem=0 f p pct w=34 fill bar=""
     (( DRAWN > 0 )) && out+="$E[${DRAWN}A"
     for p in "${PLAN[@]}"; do out+=$'\r'"$E[2K   $p"$'\n'; n=$((n + 1)); done
@@ -61,13 +62,14 @@ draw() {
         if [ "$st" = active ]; then el=$((now - S_T0[i])); else el=${S_EL[$i]}; fi
         ti="$(printf '%-28s' "${S_TITLE[$i]}")"
         case $st in
-            pending) ic="$MU·$R"; tm="~$(secs ${S_EST[$i]})"; tc=$MU; ti="$MU$ti$R" ;;
+            pending) ic="$MU·$R"; if (( S_EST[i] < 1000 )); then tm="<1 s"; else tm="~$(secs ${S_EST[$i]})"; fi; tc=$MU; ti="$MU$ti$R" ;;
             active)  ic="$AC${SPIN[$((FRAME % 10))]}$R"; tm="$(tenths $el)"; tc=$AC; ti="$B$ti$R" ;;
             done)    ic="$OK✓$R"; tm="$(tenths $el)"; tc=$D ;;
             warn)    ic="$WN!$R"; tm="$(tenths $el)"; tc=$D ;;
             fail)    ic="$ER✗$R"; tm="$(tenths $el)"; tc=$D; ti="$ER$ti$R" ;;
         esac
-        out+=$'\r'"$E[2K   $ic  $ti $tc$(printf '%7s' "$tm")$R   $D${S_DETAIL[$i]}$R"$'\n'; n=$((n + 1))
+        det="${S_DETAIL[$i]}"; if (( ${#det} > ROOM )); then det="${det:0:$((ROOM - 1))}…"; fi    # never wrap: wrapping breaks the redraw
+        out+=$'\r'"$E[2K   $ic  $ti $tc$(printf '%7s' "$tm")$R   $D$det$R"$'\n'; n=$((n + 1))
         total=$((total + S_EST[i]))
         case $st in
             done|warn) dn=$((dn + S_EST[i])) ;;
@@ -99,7 +101,8 @@ ask() {    # ask "question" line1 line2 ... -> answer on stdout; the lines disap
     printf '%s' "$a"
 }
 header() {
-    local w=62 h="" t1="School Printer" t1r="installer $VERSION" t2="$1  ·  print.mahanmirzaee.com" i
+    local h="" t1="School Printer" t1r="installer $VERSION" t2="$1  ·  print.mahanmirzaee.com" i w
+    w=$(( ${#t2} + 4 > 62 ? ${#t2} + 4 : 62 ))
     for (( i = 0; i < w; i++ )); do h+="─"; done
     printf '\n  %s┌%s┐%s\n' "$BR" "$h" "$R"
     printf '  %s│%s  %s%s%s%*s%s%s%s  %s│%s\n' "$BR" "$R" "$B" "$(grad "$t1")" "$R" $(( w - 4 - ${#t1} - ${#t1r} )) "" "$D" "$t1r" "$R" "$BR" "$R"

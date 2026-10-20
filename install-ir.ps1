@@ -16,24 +16,24 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.4.0'
-    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.4.0/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+    $Version = '1.4.1'
+    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.4.1/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
     $Files   = [ordered]@{    # path under /app/  =  SHA-256, size   (filled in by build.sh)
         'win/PrintServer.ps1' = @('E89EAD0D9EE39E00641CA26D4E47F32A0B71E1C7D4D371D167B8EC52FE66DFD7', 20161)
         'win/watch.ps1' = @('1CECCD69D589EA2B0EF909D247C6FBBB16CA8D945CD6F4E99F491629BFD78827', 11962)
         'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
-        'web/admin.html' = @('9916FC55C2003477400CE4777D28DEBE6AD4E2781F9EFAAADA9A25234932848F', 3575)
+        'web/admin.html' = @('A7E2E46BD3410D895F8BE56CD6C3D0CB7C58CFAC9FF4C58216A029E5DAF8211A', 3575)
         'web/admin.js' = @('18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5', 3804)
         'web/app.css' = @('08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50', 12608)
         'web/i18n.js' = @('7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928', 11527)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('5031F5CD5B5CFCB098BDB34A5E0D68F0AC36E02A4B035E88B6D6F0F082068471', 5318)
+        'web/print.html' = @('5640AC95518D3E0DA1E40C2E366C469C67A3199C2D27311A4383B5EC0480D40C', 5318)
         'web/print.js' = @('F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE', 19109)
     }
-    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@latest/install-ir.ps1'))"
+    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.4.1/install-ir.ps1'))"
 
     # ================================================================ look: live dashboard
     $E = [char]27
@@ -75,6 +75,7 @@ function Install-SchoolPrinter {
         $now = Get-Date
         if (-not $Force -and ($now - $script:last).TotalMilliseconds -lt 100) { return }
         $script:last = $now; $script:frame++
+        $cols = 120; try { $cols = $Host.UI.RawUI.WindowSize.Width } catch {}; $script:room = [math]::Max(10, $cols - 47)
         $L = New-Object System.Collections.Generic.List[string]
         foreach ($p in $script:plan) { $L.Add("   $p") }
         $L.Add('')
@@ -82,13 +83,14 @@ function Install-SchoolPrinter {
         foreach ($s in $Steps.Values) {
             $el = if ($s.state -eq 'active') { ($now - $s.t).TotalSeconds } else { $s.el }
             switch ($s.state) {
-                'pending' { $ic = "$MU$dot$R"; $tm = "~$(Secs $s.est)"; $tc = $MU; $ti = "$MU$(Pad $s.title 28)$R" }
+                'pending' { $ic = "$MU$dot$R"; $tm = $(if ($s.est -lt 1) { '<1 s' } else { "~$(Secs $s.est)" }); $tc = $MU; $ti = "$MU$(Pad $s.title 28)$R" }
                 'active'  { $ic = "$AC$($spin[$script:frame % 4])$R"; $tm = ('{0:N1}s' -f $el); $tc = $AC; $ti = "$B$(Pad $s.title 28)$R" }
                 'done'    { $ic = "$OK$([char]0x221A)$R"; $tm = ('{0:N1}s' -f $el); $tc = $D; $ti = Pad $s.title 28 }
                 'warn'    { $ic = "$WN!$R"; $tm = ('{0:N1}s' -f $el); $tc = $D; $ti = Pad $s.title 28 }
                 'fail'    { $ic = "$ER$([char]0x00D7)$R"; $tm = ('{0:N1}s' -f $el); $tc = $D; $ti = "$ER$(Pad $s.title 28)$R" }
             }
-            $L.Add("   $ic  $ti $tc$((' ' * [math]::Max(0, 7 - $tm.Length)) + $tm)$R   $D$($s.detail)$R")
+            $det = [string]$s.detail; if ($det.Length -gt $script:room) { $det = $det.Substring(0, [math]::Max(0, $script:room - 3)) + '...' }   # never wrap: wrapping breaks the redraw
+            $L.Add("   $ic  $ti $tc$((' ' * [math]::Max(0, 7 - $tm.Length)) + $tm)$R   $D$det$R")
             $total += $s.est
             if ($s.state -in 'done', 'warn') { $done += $s.est }
             elseif ($s.state -eq 'active') {
@@ -103,7 +105,7 @@ function Install-SchoolPrinter {
         $L.Add("   $bar$R  $B$('{0,3}' -f $pct)%$R   $D~$(Secs $rem) left  $dot  $(Secs ($now - $script:t0).TotalSeconds) elapsed$R")
         $sb = New-Object Text.StringBuilder
         if ($script:drawn) { [void]$sb.Append("$E[$($script:drawn)A") }
-        foreach ($l in $L) { [void]$sb.Append("`r$E[2K$l`n") }
+        foreach ($line in $L) { [void]$sb.Append("`r$E[2K$line`n") }   # not $l: PowerShell names ignore case ($l IS $L)
         $script:drawn = $L.Count
         Write-Host -NoNewline $sb.ToString()
     }
@@ -124,8 +126,8 @@ function Install-SchoolPrinter {
         $a
     }
     function Header($sub) {
-        $w = 62; $h = [string][char]0x2500; $v = [string][char]0x2502
-        $t1 = 'School Printer'; $t1r = "installer $Version"; $t2 = "$sub  $dot  print.mahanmirzaee.com"
+        $h = [string][char]0x2500; $v = [string][char]0x2502
+        $t1 = 'School Printer'; $t1r = "installer $Version"; $t2 = "$sub  $dot  print.mahanmirzaee.com"; $w = [math]::Max(62, $t2.Length + 4)
         Write-Host ''
         Write-Host "  $MU$([char]0x250C)$($h * $w)$([char]0x2510)$R"
         Write-Host "  $MU$v$R  $B$(Grad $t1)$R$(' ' * [math]::Max(1, $w - 4 - $t1.Length - $t1r.Length))$D$t1r$R  $MU$v$R"
@@ -347,7 +349,7 @@ function Install-SchoolPrinter {
     foreach ($ip in $ips) { Write-Host "      $(Grad "http://${ip}:$Port")" }
     Write-Host "      $($D)or http://$($env:COMPUTERNAME):$Port$R"
     Write-Host ''
-    Write-Host "   $($B)On this PC$R: double-click $B`"School Printer (Admin)`"$R on the desktop."
+    Write-Host "   $($B)On this PC$(R): double-click $B`"School Printer (Admin)`"$R on the desktop."
     Write-Host ''
     Start-Process "http://localhost:$Port/admin"
     } finally { try { [Console]::CursorVisible = $true } catch {} }
