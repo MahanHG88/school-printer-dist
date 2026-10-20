@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>School Printer Admin</title><link rel="stylesheet" href="/assets/app.css?v=1.4.0"></head>
+<body data-title="adminTitle"><div class="bg"><i></i><i></i><i></i></div>
+<main class="wrap" style="max-width:1000px">
+<header class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7" rx="1"/></svg></div>
+<div class="bt"><b data-t="title">School Printer</b><span class="sub" data-t="adminSub">Admin</span></div><div class="sp"></div>
+<button class="lang" id="lang" type="button" aria-label="Language">EN</button><a class="btn" href="/" data-t="openPrint">Open print page</a></header>
+<section class="glass hero"><div><span class="eyebrow" data-t="tellAll">Other devices — type this in the address bar</span><div class="url ltr" id="urls">&hellip;</div><div class="mute sm" id="name"></div></div>
+<button class="btn" id="copy" data-t="copyAddr">Copy address</button></section>
+<div class="grid">
+<section class="glass card"><span class="eyebrow" data-t="printing">Printing</span><div class="tr"><div><b id="ot">&hellip;</b><div class="mute sm" id="os"></div></div><button class="switch" id="sw" role="switch" aria-checked="false" aria-label="Printing open"><i></i></button></div></section>
+<section class="glass card"><span class="eyebrow" data-t="now">Right now</span><div class="stats">
+<div class="tile"><b id="ps">&hellip;</b><span data-t="printer">Printer</span></div><div class="tile"><b id="wt">&hellip;</b><span data-t="waiting">Waiting</span></div><div class="tile"><b id="jb">&hellip;</b><span data-t="winq">Print queue</span></div></div>
+<div class="status sm" style="margin-top:12px"><span class="dot" id="odot"></span><span><span data-t="officeL">Word, Excel &amp; PowerPoint</span>: <span id="otxt" class="mute"></span></span></div></section>
+</div><div class="grid">
+<section class="glass card"><span class="eyebrow" data-t="printer">Printer</span><select id="psel" class="ltr"></select>
+<div class="btns"><button class="btn" id="test" data-t="test">Print test page</button><button class="btn danger" id="clear" data-t="clear">Clear stuck jobs</button></div></section>
+<section class="glass card"><span class="eyebrow" data-t="pin">PIN</span><div class="inl"><input id="pin" placeholder="No PIN" data-tp="noPin" maxlength="20" autocomplete="off"><button class="btn" id="savepin" data-t="save">Save</button></div>
+<div class="mute sm" style="margin-top:8px" data-t="pinNote"></div></section>
+<section class="glass card"><span class="eyebrow" data-t="langCard">Language</span><select id="lsel"><option value="fa">فارسی</option><option value="en">English</option></select>
+<div class="mute sm" style="margin-top:8px" data-t="langNote"></div></section>
+</div>
+<section class="glass card" style="margin-top:16px"><span class="eyebrow" data-t="recent">Recent prints</span><table><thead><tr><th data-t="time">Time</th><th data-t="from">From</th><th data-t="copies">Copies</th><th data-t="result">Result</th></tr></thead><tbody id="log"></tbody></table></section>
+</main><div id="toast" class="glass"></div>
+<script src="/assets/i18n.js?v=1.4.0"></script>
+<script src="/assets/admin.js?v=1.4.0"></script>
+</body></html>

@@ -1,0 +1,55 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>School Printer</title><link rel="stylesheet" href="/assets/app.css?v=1.4.0"></head>
+<body data-title="title"><div class="bg"><i></i><i></i><i></i></div>
+<main class="wrap">
+<header class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7" rx="1"/></svg></div>
+<div class="bt"><b data-t="title">School Printer</b><span id="pname" class="sub ltr">&nbsp;</span></div><div class="sp"></div>
+<span class="pill"><span class="dot" id="dot"></span><span id="qt" data-t="connecting">Connecting&hellip;</span></span><button class="lang" id="lang" type="button" aria-label="Language">EN</button></header>
+
+<div class="layout">
+<section class="glass panel">
+  <label class="drop" id="drop"><input type="file" id="f" multiple>
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+    <b data-t="choose">Choose files</b><span id="typesTxt">&nbsp;</span></label>
+  <div class="note" id="officeNote" hidden></div>
+  <ul class="files" id="list"></ul>
+
+  <div class="settings">
+    <div class="row"><label class="lb" for="c" data-t="copies">Copies</label>
+      <div class="step"><button type="button" id="minus" aria-label="-">&minus;</button><input id="c" type="number" min="1" max="20" value="1" inputmode="numeric"><button type="button" id="plus" aria-label="+">+</button></div></div>
+    <div class="row"><span class="lb" data-t="pagesL">Pages</span>
+      <div class="seg" data-k="pmode"><button type="button" data-v="all" data-t="all">All</button><button type="button" data-v="custom" data-t="custom">Custom</button></div></div>
+    <div class="row" id="rangeRow" hidden><span></span><input id="range" class="ltr" autocomplete="off" data-tp="pagesPh"></div>
+    <div class="row"><label class="lb" for="paper" data-t="paper">Paper size</label><select id="paper"></select></div>
+    <div class="row"><span class="lb" data-t="orient">Orientation</span>
+      <div class="seg" data-k="orientation"><button type="button" data-v="auto" data-t="auto">Auto</button><button type="button" data-v="portrait" data-t="portrait">Portrait</button><button type="button" data-v="landscape" data-t="landscape">Landscape</button></div></div>
+    <div class="row"><span class="lb" data-t="colorL">Color</span>
+      <div class="seg" data-k="color"><button type="button" data-v="color" data-t="colorC">Color</button><button type="button" data-v="gray" data-t="colorBW">Black &amp; white</button></div>
+      <div class="hint" id="monoHint" data-t="monoOnly" hidden></div></div>
+    <div class="row" id="duplexRow" hidden><span class="lb" data-t="sides">Two-sided</span>
+      <div class="seg" data-k="duplex"><button type="button" data-v="off" data-t="off">Off</button><button type="button" data-v="long" data-t="longEdge">Long edge</button><button type="button" data-v="short" data-t="shortEdge">Short edge</button></div></div>
+    <div class="row"><span class="lb" data-t="margins">Margins</span>
+      <div class="seg" data-k="margins"><button type="button" data-v="none" data-t="mNone">None</button><button type="button" data-v="narrow" data-t="mNarrow">Narrow</button><button type="button" data-v="normal" data-t="mNormal">Normal</button><button type="button" data-v="wide" data-t="mWide">Wide</button></div></div>
+    <div class="row"><span class="lb" data-t="scale">Scale</span>
+      <div class="seg" data-k="scale"><button type="button" data-v="fit" data-t="fit">Fit to page</button><button type="button" data-v="actual" data-t="actual">Actual size</button></div></div>
+    <div class="row"><span class="lb" data-t="nup">Pages per sheet</span>
+      <div class="seg" data-k="nup"><button type="button" data-v="1">1</button><button type="button" data-v="2">2</button><button type="button" data-v="4">4</button></div></div>
+    <div class="row" id="pinbox" hidden><label class="lb" for="pin" data-t="pin">PIN</label><input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="&bull;&bull;&bull;&bull;"></div>
+  </div>
+
+  <button class="cta" id="go" disabled data-t="print">Print</button>
+  <div class="bar" id="bar" hidden><i id="bi"></i></div>
+  <div id="msg"></div>
+</section>
+
+<section class="glass preview">
+  <div class="phead"><b data-t="preview">Preview</b><span class="mute sm" id="sheetsTxt"></span><span class="sp"></span>
+    <label class="tog"><input type="checkbox" id="guides" checked><span data-t="guides">Margins</span></label></div>
+  <div class="sheets" id="sheets"><div class="empty" data-t="emptyPrev">Choose a file to see exactly how it will print.</div></div>
+</section>
+</div>
+</main>
+<script src="/assets/i18n.js?v=1.4.0"></script>
+<script src="/assets/pdf.min.js"></script>
+<script src="/assets/print.js?v=1.4.0"></script>
+</body></html>
