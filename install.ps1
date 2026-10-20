@@ -16,7 +16,7 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.5.0'
+    $Version = '1.5.1'
     $Base    = 'https://print.mahanmirzaee.com/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
@@ -25,13 +25,13 @@ function Install-SchoolPrinter {
         'win/watch.ps1' = @('1CECCD69D589EA2B0EF909D247C6FBBB16CA8D945CD6F4E99F491629BFD78827', 11962)
         'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
         'win/ipp.ps1' = @('3DD17C5B7B0BBB6055AC2E53148585C622E5AC80FF56FE3D23B799067DB875A1', 21714)
-        'web/admin.html' = @('D248BD0CEA1C44A1DFE3409940F6B066258C21FE4004370C1492134CF961C13F', 3575)
+        'web/admin.html' = @('0363FA14A2FEF69F97EEF99531F94D232DAFD4933601E0F6CE0DBFD48FEA2EAF', 3575)
         'web/admin.js' = @('18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5', 3804)
         'web/app.css' = @('B325628E2D24E680509CA4EBF6D682D9C4CE374A14C458C1258F715BCC46E032', 14238)
         'web/i18n.js' = @('00EA4B3843DD9B7D096862DABAC8C24EC65B2942E40066FE9230646A3D39B39D', 14512)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('FBBA0A623AE350C4BB7D104714BC5F825DD99CBA2C051DCEEB829E678FCB3B13', 7435)
+        'web/print.html' = @('5F5A21D3E84973C5C464BE7943382BE4AA44BD298D49FB7DF522E89E265DDF0A', 7435)
         'web/print.js' = @('B96BC982123F8A06EDE21CAF90C2A1BE87565B29E025318D187CF5057A7D4532', 21112)
         'web/vazirmatn.woff2' = @('4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92', 111152)
     }
@@ -227,7 +227,7 @@ function Install-SchoolPrinter {
         if (-not $local) {
             $script:short = $short
             try {
-                Get-File "$Base/$name" $src {
+                Get-File "$Base/$name`?v=$Version" $src {    # ?v=: each release is its own CDN cache entry
                     param($n)
                     $script:got += $n
                     $secs = [math]::Max(0.05, ((Get-Date) - $script:dlStart).TotalSeconds); $kbps = ($script:got / 1024) / $secs
