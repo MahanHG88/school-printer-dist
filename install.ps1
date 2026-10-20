@@ -16,7 +16,7 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.4.2'
+    $Version = '1.4.3'
     $Base    = 'https://print.mahanmirzaee.com/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
@@ -24,13 +24,13 @@ function Install-SchoolPrinter {
         'win/PrintServer.ps1' = @('E89EAD0D9EE39E00641CA26D4E47F32A0B71E1C7D4D371D167B8EC52FE66DFD7', 20161)
         'win/watch.ps1' = @('1CECCD69D589EA2B0EF909D247C6FBBB16CA8D945CD6F4E99F491629BFD78827', 11962)
         'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
-        'web/admin.html' = @('D1C878B166869603230E073749473897DF6D54CFC7BF2D3F9854FE4B46B27D7E', 3575)
+        'web/admin.html' = @('AE7B90F07AA39E3176ABD3602AD0C5C1C2860ACEB45416B2F19C6322B816DD04', 3575)
         'web/admin.js' = @('18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5', 3804)
         'web/app.css' = @('08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50', 12608)
         'web/i18n.js' = @('7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928', 11527)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('6656D92F2ECEAA84FD69095E39DE68965910BE6A046A3E0ADFF6F3861A2D79EB', 5318)
+        'web/print.html' = @('A648C3AD1E0794029BCFD83F1A6E39742766C682F06A15D02EFB102BFEB48646', 5318)
         'web/print.js' = @('F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE', 19109)
     }
     $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://print.mahanmirzaee.com/install.ps1'))"
@@ -102,7 +102,7 @@ function Install-SchoolPrinter {
         $pct = [int][math]::Min(100, [math]::Floor(100 * $done / [math]::Max(0.1, $total)))
         $w = 34; $fill = [int][math]::Floor($w * $pct / 100); $bar = ''
         for ($i = 0; $i -lt $w; $i++) { if ($i -lt $fill) { $bar += "$E[38;2;$(Rgb ($i / ($w - 1)))m" + [char]0x2588 } else { $bar += "$E[38;2;58;60;86m" + [char]0x2591 } }
-        $L.Add("   $bar$R  $B$('{0,3}' -f $pct)%$R   $D~$(Secs $rem) left  $dot  $(Secs ($now - $script:t0).TotalSeconds) elapsed$R")
+        $L.Add("   $bar$R  $B$('{0,3}' -f $pct)%$R   $D$(if ($rem -lt 1) { <1 s } else { "~$(Secs $rem)" }) left  $dot  $(Secs ($now - $script:t0).TotalSeconds) elapsed$R")
         $sb = New-Object Text.StringBuilder
         if ($script:drawn) { [void]$sb.Append("$E[$($script:drawn)A") }
         foreach ($line in $L) { [void]$sb.Append("`r$E[2K$line`n") }   # not $l: PowerShell names ignore case ($l IS $L)

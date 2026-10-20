@@ -13,10 +13,10 @@
 # non-ASCII character: in a UTF-8 locale bash 3.2 reads "$MU·" as a variable named "MU·" (seen 2026-10-20).
 set -euo pipefail
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 BASE="https://print.mahanmirzaee.com/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
 PORT=8631
-FILES=("unix/schoolprinter.pl:7F6051B7A0218A29AEE3F4CD934BE8BC6B47D4B70413068CE6AB82124E0B046D:22754" "web/admin.html:D1C878B166869603230E073749473897DF6D54CFC7BF2D3F9854FE4B46B27D7E:3575" "web/admin.js:18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5:3804" "web/app.css:08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50:12608" "web/i18n.js:7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928:11527" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:6656D92F2ECEAA84FD69095E39DE68965910BE6A046A3E0ADFF6F3861A2D79EB:5318" "web/print.js:F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE:19109")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:7F6051B7A0218A29AEE3F4CD934BE8BC6B47D4B70413068CE6AB82124E0B046D:22754" "web/admin.html:AE7B90F07AA39E3176ABD3602AD0C5C1C2860ACEB45416B2F19C6322B816DD04:3575" "web/admin.js:18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5:3804" "web/app.css:08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50:12608" "web/i18n.js:7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928:11527" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:A648C3AD1E0794029BCFD83F1A6E39742766C682F06A15D02EFB102BFEB48646:5318" "web/print.js:F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE:19109")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
@@ -83,7 +83,7 @@ draw() {
     pct=$(( dn * 100 / (total > 0 ? total : 1) )); (( pct > 100 )) && pct=100
     fill=$(( w * pct / 100 ))
     for (( i = 0; i < w; i++ )); do if (( i < fill )); then bar+="${E}[38;5;${GRAD[$(( i * ${#GRAD[@]} / w ))]}m█"; else bar+="${E}[38;5;237m░"; fi; done
-    out+=$'\r'"${E}[2K   $bar${R}  ${B}$(printf '%3d' $pct)%${R}   ${D}~$(secs $rem) left  ·  $(secs $((now - T0))) elapsed${R}"$'\n'; n=$((n + 1))
+    out+=$'\r'"${E}[2K   $bar${R}  ${B}$(printf '%3d' $pct)%${R}   ${D}$( (( rem < 1000 )) && echo "<1 s" || echo "~$(secs $rem)") left  ·  $(secs $((now - T0))) elapsed${R}"$'\n'; n=$((n + 1))
     DRAWN=$n
     printf '%s' "$out"
 }
