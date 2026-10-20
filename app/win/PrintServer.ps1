@@ -18,7 +18,7 @@ Add-Type -AssemblyName System.Drawing
 $BaseTypes   = @('pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff')
 $OfficeTypes = @('doc', 'docx', 'rtf', 'odt', 'txt', 'xls', 'xlsx', 'csv', 'ods', 'ppt', 'pptx', 'odp')
 $Mime = @{ '.html' = 'text/html; charset=utf-8'; '.css' = 'text/css; charset=utf-8'; '.js' = 'application/javascript; charset=utf-8'
-           '.pdf' = 'application/pdf'; '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.jpeg' = 'image/jpeg'; '.gif' = 'image/gif' }
+           '.pdf' = 'application/pdf'; '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.jpeg' = 'image/jpeg'; '.gif' = 'image/gif'; '.woff2' = 'font/woff2' }
 
 function Get-Cfg {
     $c = @{ pin = ''; open = '1'; printer = ''; lang = 'fa' }
@@ -156,6 +156,9 @@ $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://+:$port/")
 $listener.Start()
 
+. (Join-Path $PSScriptRoot 'ipp.ps1')                     # "Add to this device": the printer as a real IPP printer
+$c0 = Get-Cfg; [void](Ipp-Announce $c0 (Get-Caps $c0.printer) $port)
+
 while ($listener.IsListening) {
     $ctx = $listener.GetContext()
     $req = $ctx.Request; $res = $ctx.Response
@@ -164,10 +167,24 @@ while ($listener.IsListening) {
         $m = $req.HttpMethod
 
         # ------------------------------------------------ static files (page styles + scripts + pdf.js)
-        if ($m -eq 'GET' -and $path -match '^/assets/([a-z0-9.-]+\.(css|js))$') {
+        if ($m -eq 'GET' -and $path -match '^/assets/([a-z0-9.-]+\.(css|js|woff2))$') {
             $name = $Matches[1]; $f = Join-Path $web $name
-            if (Test-Path $f) { SendFile $res $f ($name -like 'pdf*') } else { Json $res 404 @{ error = 'Not found' } }
+            if (Test-Path $f) { SendFile $res $f ($name -like 'pdf*' -or $name -like '*.woff2') } else { Json $res 404 @{ error = 'Not found' } }
             continue
+        }
+
+        if ($m -eq 'GET' -and $path -eq '/add-printer.cmd') {    # "Add to this device" on Windows
+            $res.Headers.Add('Content-Disposition', 'attachment; filename="Add School Printer.cmd"')
+            Send $res 200 'application/octet-stream' ([Text.Encoding]::ASCII.GetBytes((Ipp-AddCmd $req.Url.Authority))); continue
+        }
+        if ($m -eq 'GET' -and $path -eq '/add.sh') {    # "Add to this device" on macOS / Linux
+            $sh = (Ipp-AddScript $req.Url.Authority) -replace "`r`n", "`n"     # not inside GetBytes( ): there ',' splits arguments
+            Send $res 200 'text/plain; charset=utf-8' ([Text.Encoding]::UTF8.GetBytes($sh)); continue
+        }
+
+        # ------------------------------------------------ IPP printer (devices that added "School Printer")
+        if ($m -eq 'POST' -and ($path -eq '/ipp/print' -or $path -like '/ipp/print/*')) {
+            $c = Get-Cfg; Ipp-Handle $ctx $c (Get-Caps $c.printer); continue
         }
 
         # ------------------------------------------------ admin (this PC only)

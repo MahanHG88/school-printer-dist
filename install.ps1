@@ -16,22 +16,24 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.4.3'
+    $Version = '1.5.0'
     $Base    = 'https://print.mahanmirzaee.com/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
     $Files   = [ordered]@{    # path under /app/  =  SHA-256, size   (filled in by build.sh)
-        'win/PrintServer.ps1' = @('E89EAD0D9EE39E00641CA26D4E47F32A0B71E1C7D4D371D167B8EC52FE66DFD7', 20161)
+        'win/PrintServer.ps1' = @('13EE717FB3CAB1351DA2AC9A650D7D45295DA5B5D0D6F4DC3EEDFBF24C1B1DB2', 21389)
         'win/watch.ps1' = @('1CECCD69D589EA2B0EF909D247C6FBBB16CA8D945CD6F4E99F491629BFD78827', 11962)
         'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
-        'web/admin.html' = @('AE7B90F07AA39E3176ABD3602AD0C5C1C2860ACEB45416B2F19C6322B816DD04', 3575)
+        'win/ipp.ps1' = @('3DD17C5B7B0BBB6055AC2E53148585C622E5AC80FF56FE3D23B799067DB875A1', 21714)
+        'web/admin.html' = @('D248BD0CEA1C44A1DFE3409940F6B066258C21FE4004370C1492134CF961C13F', 3575)
         'web/admin.js' = @('18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5', 3804)
-        'web/app.css' = @('08E7A35572A53ED1C76EBCAC0BDA15E2912E4D4C52F3213DD1BC4EDFF7D9CD50', 12608)
-        'web/i18n.js' = @('7D7D2147064473E6CE493848F7E95FC032D4A49BC4ACD3966D22207B33DFF928', 11527)
+        'web/app.css' = @('B325628E2D24E680509CA4EBF6D682D9C4CE374A14C458C1258F715BCC46E032', 14238)
+        'web/i18n.js' = @('00EA4B3843DD9B7D096862DABAC8C24EC65B2942E40066FE9230646A3D39B39D', 14512)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('A648C3AD1E0794029BCFD83F1A6E39742766C682F06A15D02EFB102BFEB48646', 5318)
-        'web/print.js' = @('F86C682E2B293CA2C96FA441860FB970D7E6AE3A9DE1428379882C146DD393EE', 19109)
+        'web/print.html' = @('FBBA0A623AE350C4BB7D104714BC5F825DD99CBA2C051DCEEB829E678FCB3B13', 7435)
+        'web/print.js' = @('B96BC982123F8A06EDE21CAF90C2A1BE87565B29E025318D187CF5057A7D4532', 21112)
+        'web/vazirmatn.woff2' = @('4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92', 111152)
     }
     $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://print.mahanmirzaee.com/install.ps1'))"
 
@@ -127,7 +129,7 @@ function Install-SchoolPrinter {
     }
     function Header($sub) {
         $h = [string][char]0x2500; $v = [string][char]0x2502
-        $t1 = 'School Printer'; $t1r = "installer $Version"; $t2 = $sub   # system  ·  download source; $w = [math]::Max(62, $t2.Length + 4)
+        $t1 = 'School Printer'; $t1r = "installer $Version"; $t2 = $sub; $w = [math]::Max(62, $t2.Length + 4)   # $sub = system  -  download source
         Write-Host ''
         Write-Host "  $MU$([char]0x250C)$($h * $w)$([char]0x2510)$R"
         Write-Host "  $MU$v$R  $B$(Grad $t1)$R$(' ' * [math]::Max(1, $w - 4 - $t1.Length - $t1r.Length))$D$t1r$R  $MU$v$R"

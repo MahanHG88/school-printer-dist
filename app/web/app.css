@@ -1,12 +1,17 @@
 /* School Printer - shared look (glass). Served by the printer computer at /assets/app.css */
+/* Vazirmatn (SIL OFL 1.1) is served by the printer computer itself, so every device - Mac, Windows, phones, no
+   internet needed - shows the same font in English and Persian instead of whatever happens to be installed. */
+@font-face{font-family:'Vazirmatn';src:url('/assets/vazirmatn.woff2') format('woff2-variations'),url('/assets/vazirmatn.woff2') format('woff2');
+font-weight:100 900;font-style:normal;font-display:swap}
 :root{--txt:#101327;--mute:rgba(16,19,39,.6);--faint:rgba(16,19,39,.4);--glass:rgba(255,255,255,.52);--glass2:rgba(255,255,255,.42);--brd:rgba(255,255,255,.75);--line:rgba(16,19,39,.09);
 --acc:#5b5bf6;--acc2:#b153f5;--pink:#f472b6;--ok:#0e9f6e;--err:#e5484d;--warn:#d97706;--shadow:0 24px 60px -24px rgba(48,46,130,.38);--b1:#c3cbff;--b2:#ffc6e4;--b3:#a6f0ff;--base:#eef0fa;
 --paper:#fff;--desk:rgba(16,19,39,.05)}
 @media(prefers-color-scheme:dark){:root{--txt:#eef0ff;--mute:rgba(238,240,255,.58);--faint:rgba(238,240,255,.38);--glass:rgba(24,26,48,.5);--glass2:rgba(255,255,255,.06);--brd:rgba(255,255,255,.13);--line:rgba(255,255,255,.08);
 --acc:#8080ff;--acc2:#c88bff;--ok:#34d399;--err:#ff6b70;--warn:#fbbf24;--shadow:0 24px 60px -24px rgba(0,0,0,.7);--b1:#3a33a8;--b2:#7e1d57;--b3:#0f5f78;--base:#0a0b18;--desk:rgba(0,0,0,.25)}}
 *{box-sizing:border-box}html,body{margin:0}[hidden]{display:none!important}
-body{min-height:100vh;background:var(--base);color:var(--txt);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
-[dir=rtl] body{font-family:Vazirmatn,"Segoe UI",Tahoma,-apple-system,system-ui,sans-serif}
+body{min-height:100vh;background:var(--base);color:var(--txt);font:15px/1.5 Vazirmatn,-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Tahoma,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+[dir=rtl] body{font-family:Vazirmatn,Tahoma,"Segoe UI",-apple-system,system-ui,sans-serif}
+button,input,select{font-family:inherit}
 .bg{position:fixed;inset:0;z-index:-1;overflow:hidden}
 .bg i{position:absolute;border-radius:50%;filter:blur(80px);opacity:.8;animation:drift 24s ease-in-out infinite alternate}
 .bg i:nth-child(1){width:60vmax;height:60vmax;background:var(--b1);top:-25vmax;left:-20vmax}
@@ -110,3 +115,14 @@ a{color:var(--acc)}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:start;padding:10px 6px;border-bottom:1px solid var(--line)}th{font-size:12px;color:var(--mute);font-weight:600}tr:last-child td{border:0}
 .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:650}.tag.ok{background:color-mix(in srgb,var(--ok) 15%,transparent)}.tag.err{background:color-mix(in srgb,var(--err) 15%,transparent)}
 .status{display:flex;align-items:center;gap:8px;font-weight:600}
+
+/* ---------- "Add to this device" ---------- */
+.addbtn{padding:7px 12px;border-radius:99px;font-size:13px;white-space:nowrap}
+@media(max-width:560px){.addbtn span{display:none}}
+.modal{position:fixed;inset:0;z-index:40;background:rgba(10,10,30,.35);display:grid;place-items:center;padding:16px;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.sheetbox{width:min(560px,100%);max-height:calc(100vh - 32px);overflow:auto;padding:22px;display:grid;gap:12px}
+.mhead{display:flex;align-items:center;justify-content:space-between;gap:12px}.mhead b{font-size:17px}
+.mhead .x{background:var(--glass2);border:1px solid var(--brd);border-radius:10px;padding:6px 12px;font-size:13px;font-weight:600}
+.sheetbox p{margin:0}.ospane{display:grid;gap:10px}.ospane[hidden]{display:none}
+.cta.small{width:auto;justify-self:start;padding:10px 16px;font-size:14px;text-decoration:none;display:inline-block}
+.cmdbox{display:flex;gap:8px;align-items:stretch}.cmdbox code{flex:1;min-width:0;padding:10px 12px;border-radius:10px;background:rgba(17,19,38,.88);color:#e8eaff;font:12.5px/1.5 ui-monospace,"SF Mono",Consolas,monospace;overflow-wrap:anywhere}

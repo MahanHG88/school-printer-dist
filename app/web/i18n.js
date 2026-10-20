@@ -1,6 +1,17 @@
 /* School Printer - translations (English / Persian) and language switching. Shared by every platform. */
 var I = {
 en: {
+  addDev: 'Add to this device', addTitle: 'Print from any app on this device',
+  addLead: 'Add School Printer as a normal printer, then choose it in any app\'s Print dialog - Word, Chrome, Photos, anything.',
+  osWin: 'Windows', osMac: 'Mac', osLinux: 'Linux', osPhone: 'Phone / tablet',
+  winA: 'Easiest: open printer settings, press "Add device" and pick "School Printer" when it appears.', winOpen: 'Open printer settings',
+  winB: 'Or download this file and double-click it:', winDl: 'Download "Add School Printer"',
+  winC: 'Or paste this into PowerShell:', macA: 'Open Terminal, paste this, press Enter (your Mac password may be asked):',
+  macNote: 'Use this command rather than adding it in System Settings: settings may pick a PostScript driver that this printer cannot use.',
+  linA: 'Paste this into a terminal (your password may be asked):',
+  phoneA: 'Phones and tablets print from this page: pick a file above and press Print.',
+  pinNote: 'This printer has a PIN: when your device asks for a user name and password, type any name and the PIN as the password.',
+  copy: 'Copy', copied: 'Copied', close: 'Close',
   title: 'School Printer', adminTitle: 'School Printer Admin', connecting: 'Connecting…', closed: 'Closed', waitingN: '{n} waiting',
   ready: 'Ready', offline: 'Offline', noReach: 'Could not reach the printer computer.', remove: 'Remove', error: 'Error',
   choose: 'Choose files', orDrop: 'or drop them here',
@@ -39,6 +50,17 @@ en: {
   sNormal: 'Normal', sOffline: 'Offline', sNotFound: 'Not found', sError: 'Error'
 },
 fa: {
+  addDev: 'افزودن به این دستگاه', addTitle: 'چاپ از هر برنامه‌ای روی این دستگاه',
+  addLead: 'چاپگر مدرسه را مثل یک چاپگر معمولی اضافه کنید، بعد در پنجرهٔ چاپ هر برنامه‌ای انتخابش کنید - Word، Chrome، عکس‌ها و هر چیز دیگر.',
+  osWin: 'ویندوز', osMac: 'مک', osLinux: 'لینوکس', osPhone: 'گوشی / تبلت',
+  winA: 'ساده‌ترین راه: تنظیمات چاپگر را باز کنید، «Add device» را بزنید و وقتی «School Printer» ظاهر شد انتخابش کنید.', winOpen: 'باز کردن تنظیمات چاپگر',
+  winB: 'یا این فایل را دانلود کنید و روی آن دوبار کلیک کنید:', winDl: 'دانلود «Add School Printer»',
+  winC: 'یا این را در PowerShell بچسبانید:', macA: 'Terminal را باز کنید، این را بچسبانید و Enter بزنید (ممکن است رمز مک پرسیده شود):',
+  macNote: 'از همین دستور استفاده کنید، نه افزودن از System Settings: تنظیمات ممکن است درایور PostScript انتخاب کند که این چاپگر با آن کار نمی‌کند.',
+  linA: 'این را در ترمینال بچسبانید (ممکن است رمز عبور پرسیده شود):',
+  phoneA: 'گوشی‌ها و تبلت‌ها از همین صفحه چاپ می‌کنند: بالا فایل را انتخاب کنید و چاپ را بزنید.',
+  pinNote: 'این چاپگر رمز دارد: وقتی دستگاه نام کاربری و رمز خواست، هر نامی بنویسید و رمز چاپگر را به‌عنوان رمز عبور وارد کنید.',
+  copy: 'کپی', copied: 'کپی شد', close: 'بستن',
   title: 'چاپگر مدرسه', adminTitle: 'مدیریت چاپگر مدرسه', connecting: 'در حال اتصال…', closed: 'بسته', waitingN: '{n} در صف',
   ready: 'آماده', offline: 'در دسترس نیست', noReach: 'به رایانهٔ چاپگر دسترسی نیست.', remove: 'حذف', error: 'خطا',
   choose: 'انتخاب فایل', orDrop: 'یا فایل‌ها را اینجا رها کنید',

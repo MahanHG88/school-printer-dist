@@ -273,5 +273,30 @@
     })();
   };
 
+
+  /* ---------------- "Add to this device" ---------------- */
+  var hostp = location.host, ua = navigator.userAgent;
+  $('cmdwin').textContent = 'Add-Printer -IppURL "http://' + hostp + '/ipp/print"';
+  $('cmdmac').textContent = 'curl -fsSL http://' + hostp + '/add.sh | bash';
+  $('cmdlin').textContent = 'curl -fsSL http://' + hostp + '/add.sh | bash';
+  function osPick(o) {
+    [].forEach.call(document.querySelectorAll('#ostabs button'), function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-os') === o)); });
+    [].forEach.call(document.querySelectorAll('.ospane'), function (p) { p.hidden = p.getAttribute('data-os') !== o; });
+  }
+  var guess = /iPhone|iPad|Android/.test(ua) ? 'phone' : /Windows/.test(ua) ? 'win' : /Macintosh/.test(ua) ? (navigator.maxTouchPoints > 1 ? 'phone' : 'mac') : /Linux|CrOS/.test(ua) ? 'linux' : 'win';
+  osPick(guess);
+  $('ostabs').onclick = function (e) { var b = e.target.closest('button'); if (b) osPick(b.getAttribute('data-os')); };
+  $('addbtn').onclick = function () { $('addpin').hidden = !(st0 && st0.pin); $('addmodal').hidden = false; };
+  $('addclose').onclick = function () { $('addmodal').hidden = true; };
+  $('addmodal').onclick = function (e) { if (e.target === this) this.hidden = true; };
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') $('addmodal').hidden = true; });
+  [].forEach.call(document.querySelectorAll('[data-copy]'), function (b) {
+    b.onclick = function () {
+      var t = $(b.getAttribute('data-copy')).textContent;
+      function done() { b.textContent = L('copied'); setTimeout(function () { b.textContent = L('copy'); }, 1500); }
+      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, fallback); else fallback();
+      function fallback() { var a = document.createElement('textarea'); a.value = t; document.body.appendChild(a); a.select(); try { document.execCommand('copy'); done(); } catch (e) {} a.remove(); }
+    };
+  });
   status(); setInterval(status, 5000);
 })();
