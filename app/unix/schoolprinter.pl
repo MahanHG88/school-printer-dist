@@ -214,7 +214,7 @@ sub do_print {    # in the request's worker, after the reply: settings -> lp opt
 # the password itself is never stored. Same protocol as sync.ps1/syncd.ps1 on Windows, so both mix in one network.
 my $SYNC = "$DIR/Sync"; my $STD = "$SYNC/st"; my $JOBS = "$SYNC/jobs"; my $SCANS = "$SYNC/scans"; my $HELD = "$SYNC/held"; my $ALIAS = 'schoolprinter.local';
 my $HAS_SHA = eval { require Digest::SHA; 1 } ? 1 : 0;
-my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.1'; my $FRESH = 25;
+my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.2'; my $FRESH = 25;
 
 sub rnd_bytes { my $n = shift; my $b = ''; if (open(my $h, '<:raw', '/dev/urandom')) { read($h, $b, $n); close $h } $b .= chr(int rand 256) while length $b < $n; $b }
 sub rnd_hex { unpack('H*', rnd_bytes(shift)) }
@@ -442,18 +442,38 @@ sub scan_open {    # connect to many addresses at once (200 at a time) -> the on
 sub scan {    # (in its own process) -> peers.json: stations of this network; others.json: School Printers in another one
     my $g = group() or return; my $me = node_id(); my %old = map { $_->{id} => $_ } @{ peers_list() };
     my (%found, %gone, $others);
-    for my $x (scan_open(scan_targets())) {
-        my ($c, $b) = http("http://$x->[0]:$x->[1]", 'GET', '/sync/hello', {}, '', 2); next unless $c == 200;
+    my @tg = scan_targets(); my @op = scan_open(@tg); my $ans = 0;
+    for my $x (@op) {
+        my ($c, $b) = http("http://$x->[0]:$x->[1]", 'GET', '/sync/hello', {}, '', 2); next unless $c == 200; $ans++;
         my $h = jdec($b); next unless ref $h eq 'HASH' && ($h->{app} || '') eq 'school-printer' && ($h->{id} || '') =~ /^[0-9a-f]{32}$/ && $h->{id} ne $me;
         if (($h->{gid} || '') eq $g->{gid}) { next unless pin_ok($g, $h->{id}, $h->{pk}, $h->{pkmac});    # not who it claims to be: ignore
             $found{$h->{id}} = { id => $h->{id}, url => "http://$x->[0]:$x->[1]", pk => $h->{pk}, station => clean_text($h->{station}, 40), seen => time } }
         else { $others++; $gone{$h->{id}} = 1 }    # answered from another network: not ours any more
     }
-    for my $id (keys %old) { $found{$id} ||= $old{$id} if !$gone{$id} && time - ($old{$id}{seen} || 0) < 600 }    # missed one scan: keep 10 minutes
+    # missed by this scan: keep it for 10 minutes, and as long as it still answers (a scan can miss a station it can poll)
+    for my $id (keys %old) { $found{$id} ||= $old{$id} if !$gone{$id} && (time - ($old{$id}{seen} || 0) < 600 || polled_recently($id)) }
+    my %now = map { $_->{id} => $_ } @{ peers_list() };    # learned while this scan ran
+    for my $id (keys %now) { $found{$id} ||= $now{$id} unless $old{$id} || $gone{$id} }
     my @p = sort { ($b->{seen} || 0) <=> ($a->{seen} || 0) } values %found; @p = @p[0 .. $MAXNODES - 2] if @p > $MAXNODES - 1;
     $_->{seen} = N($_->{seen}) for @p;
     spit("$SYNC/peers.json", json(\@p)); spit("$SYNC/others.json", json({ n => N($others || 0), at => N(time) }));
+    # what the search saw (admin page): which networks, how many addresses, how many answered
+    spit("$SYNC/search.json", json({ at => N(time), nets => [map { "$_->[0]/$_->[1]" } subnets()], targets => N(scalar @tg), open => N(scalar @op),
+                                     printers => N($ans), found => N(scalar grep { ($_->{seen} || 0) >= time - 60 } @p) }));
     for my $x (grep { !$old{$_->{id}} } @p) { peer($x, 'POST', '/sync/announce', {}, '', 2) }    # new here: they look again at once
+}
+sub polled_recently { my $st = jdec(slurp("$STD/$_[0].json")); ref $st eq 'HASH' && time - ($st->{at} || 0) <= $FRESH }
+sub learn {    # stations that contacted us before we found them (Sync/learn/<id>): check them at their own address, then add them
+    my $g = group() or return; opendir(my $d, "$SYNC/learn") or return; my @f = grep { /^[0-9a-f]{32}$/ } readdir $d; closedir $d;
+    my %have = map { $_->{id} => 1 } @{ peers_list() }; my @add;
+    for my $id (@f[0 .. ($#f < 9 ? $#f : 9)]) {
+        my $l = jdec(slurp("$SYNC/learn/$id")); unlink "$SYNC/learn/$id"; next if $have{$id} || ref $l ne 'HASH';
+        my $url = "http://$l->{ip}:$l->{port}"; my ($c, $b) = http($url, 'GET', '/sync/hello', {}, '', 2); next unless $c == 200;
+        my $h = jdec($b); next unless ref $h eq 'HASH' && ($h->{id} || '') eq $id && ($h->{gid} || '') eq $g->{gid} && pin_ok($g, $id, $h->{pk}, $h->{pkmac});
+        push @add, { id => $id, url => $url, pk => $h->{pk}, station => clean_text($h->{station}, 40), seen => N(time) }; $have{$id} = 1;
+    }
+    return unless @add;
+    my @p = (@{ peers_list() }, @add); @p = @p[0 .. $MAXNODES - 2] if @p > $MAXNODES - 1; spit("$SYNC/peers.json", json(\@p));
 }
 sub poll_peers {    # ask every station for its status at once; each answer -> st/<id>.json
     my @p = @{ peers_list() }; my %kids;
@@ -563,7 +583,7 @@ sub net_info {    # the admin page's "Printing network" card
     my %names = map { $_->{id} => $_->{station} } @{ peers_list() };
     my @alerts = map { { id => $_, station => $names{$_} || substr($_, 0, 8), at => N($al->{$_}{at} || 0) } } grep { time - ($al->{$_}{at} || 0) < 86400 } sort keys %$al;
     return { ok => B($HAS_SHA), joined => B($g), alerts => \@alerts, crypto => B(which("openssl") ? 1 : 0), mode => $g ? $g->{mode} : 'alone', token => $tk ? $tk->{t} : '', tokenLeft => N($tk ? $tk->{until} - time : 0), gid => $g ? $g->{gid} : '', station => station_of(%cf), share => B($cf{share} ne '0'),
-             accept => B($cf{accept} ne '0'), conv => B($cf{conv} ne '0'), others => N($g ? $o->{n} || 0 : 0), lastScan => N($ls && $g ? time - $ls : -1),
+             accept => B($cf{accept} ne '0'), conv => B($cf{conv} ne '0'), others => N($g ? $o->{n} || 0 : 0), lastScan => N($ls && $g ? time - $ls : -1), search => ($g ? jdec(slurp("$SYNC/search.json")) : undef),
              max => N($MAXNODES), stations => \@rows, main => leader()->{id}, alias => "http://$ALIAS:$PORT", domain => $cf{domain}, dns => B($cf{dns} ne '0'),
              dnsState => do { my $x = jdec(slurp("$SYNC/dns.json")); ref $x eq 'HASH' && time - ($x->{at} || 0) < 30 ? $x->{state} : 'off' } };
 }
@@ -672,7 +692,7 @@ sub worker {
                 unlink "$SYNC/scan-now"; $last_scan = time;
                 my $pid = fork; if (defined $pid && !$pid) { eval { scan() }; exit 0 } $scan_pid = $pid || 0;
             }
-            eval { poll_peers() }; eval { adopt_domain() };
+            eval { learn() }; eval { poll_peers() }; eval { adopt_domain() };
         }
         # right after the poll: a main station that just went quiet is replaced within one round (2-3 seconds)
         my $online = eval { track_online() } || 0;
@@ -1183,7 +1203,7 @@ sub peer {    # encrypted, signed request to station $x -> (status, decrypted an
     my ($e, $mk) = eval { pair_keys($g, $x->{id}, $x->{pk}) } or return (0, 'keys');
     my ($xs, $mypk) = identity(); my $id = node_id(); my $t = time; my $n = rnd_hex(16);
     my $ct = eval { ctr($e, ivof($mk, 'req', $n), envelope($meta, $payload)) }; return (0, 'crypto') unless defined $ct;
-    my %h = ('X-Sync-Node' => $id, 'X-Sync-Time' => $t, 'X-Sync-Nonce' => $n, 'X-Sync-Pk' => $mypk, 'X-Sync-Pkmac' => pk_mac($g, $id, $mypk),
+    my %h = ('X-Sync-Port' => $PORT, 'X-Sync-Node' => $id, 'X-Sync-Time' => $t, 'X-Sync-Nonce' => $n, 'X-Sync-Pk' => $mypk, 'X-Sync-Pkmac' => pk_mac($g, $id, $mypk),
              'X-Sync-Sig' => Digest::SHA::hmac_sha256_hex("req\n$t\n$m\n$p\n$id\n$n\n" . Digest::SHA::sha256_hex($ct), $mk));
     my ($c, $b, $hd) = http($x->{url}, $m, $p, \%h, $ct, $to);
     return ($c, $b) if $c == 0 || $c == 401;    # not sealed: no trust in the body
@@ -1265,8 +1285,13 @@ sub handle {
         my $body = read_body($c, $len, $rest); return unless defined $body;
         my $x = sync_open(\%H, $m, $path, $body) or return jreply($c, 401, { error => 'SIGNATURE', time => N(time) });
         my ($from, $mt, $pl) = ($x->{from}, $x->{meta}, $x->{payload});
-        # a station that knows us but we do not know it (its announce got lost): look again now, not in a minute
-        spit("$SYNC/scan-now", '') unless -e "$SYNC/scan-now" || grep { $_->{id} eq $from } @{ peers_list() };
+        # a station that knows us but we do not know it: learn it from this very contact (its address is right here),
+        # and look again now - so if either side finds the other, both know each other
+        unless (grep { $_->{id} eq $from } @{ peers_list() }) {
+            (my $ip = $peer) =~ s/^::ffff://i; my $pt = ($H{'x-sync-port'} || '') =~ /^(\d{2,5})$/ ? $1 : $PORT;
+            mkdir "$SYNC/learn"; spit("$SYNC/learn/$from", json({ ip => $ip, port => N($pt), at => N(time) })) if $ip =~ /^[\d.]+$/;
+            spit("$SYNC/scan-now", '') unless -e "$SYNC/scan-now";
+        }
         if ($path eq '/sync/announce') { return sjreply($c, $x, 200, { ok => B(1) }) }
         if ($path eq '/sync/probe') { return sreply($c, $x, 200, $PROBE) }
         if ($path eq '/sync/status') { return sreply($c, $x, 200, json(self_cached())) }

@@ -104,7 +104,7 @@ function Self-Status {
     $os = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
     $office = Sp-LocalOffice; $busy = @(Get-ChildItem $SpUp -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.todo', '.doing' }).Count
     $open = $c.open -ne '0'; $u = Sp-Read (Join-Path $SpSync 'uptime.json')
-    [ordered]@{ app = 'school-printer'; proto = 2; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.7.1'
+    [ordered]@{ app = 'school-printer'; proto = 2; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.7.2'
         open = $open; ready = ($open -and $pst -eq 'Normal'); accept = ($c.accept -ne '0'); printer = $pr; pstatus = $pst
         jobs = ($spool.Count + $inb.Count); queue = $sheets; color = [bool]$caps.color; duplex = [bool]$caps.duplex; papers = @($caps.papers)
         conv = [ordered]@{ ok = ($office -in 'office', 'lo'); kind = $office; busy = $busy; share = ($c.conv -ne '0') }
@@ -126,24 +126,44 @@ function Find-Stations {    # -> Sync\peers.json (same password), Sync\others.js
     $g = Sp-Group; if (-not $g) { return }
     $me = Sp-NodeId; $old = @{}; foreach ($x in Sp-Peers) { $old[[string]$x.id] = $x }
     $found = @{}; $gone = @{}; $others = 0
-    $hosts = Sp-ScanOpen (Sp-ScanTargets)
+    $targets = Sp-ScanTargets; $hosts = Sp-ScanOpen $targets; $answered = 0
     $calls = @(foreach ($h in $hosts) { $wc = New-Object Net.WebClient; @{ t = $h; wc = $wc; k = $wc.DownloadStringTaskAsync("http://$($h[0]):$($h[1])/sync/hello") } })
     if ($calls.Count) { try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($calls | ForEach-Object { $_.k }), 3000) } catch {} }
     foreach ($cl in $calls) {
         if ($cl.k.Status -ne 'RanToCompletion') { try { $cl.wc.CancelAsync() } catch {}; continue }
         $h = $null; try { $h = $cl.k.Result | ConvertFrom-Json } catch {}
         if (-not $h -or $h.app -ne 'school-printer' -or [string]$h.id -cnotmatch '^[0-9a-f]{32}$' -or $h.id -eq $me) { continue }
+        $answered++
         if ([string]$h.gid -eq $g.gid) {
             if (-not (Sp-PinOk $g ([string]$h.id) ([string]$h.pk) ([string]$h.pkmac))) { continue }    # not who it claims to be: ignore
             $found[[string]$h.id] = [ordered]@{ id = [string]$h.id; url = "http://$($cl.t[0]):$($cl.t[1])"; pk = [string]$h.pk; station = ([string]$h.station -replace '[\x00-\x1f<>"\\]', ''); seen = (Sp-Now) }
         }
         else { $others++; $gone[[string]$h.id] = 1 }    # answered from another network: not ours any more
     }
-    foreach ($id in $old.Keys) { if (-not $found.ContainsKey($id) -and -not $gone[$id] -and ((Sp-Now) - [int64]$old[$id].seen) -lt 600) { $found[$id] = $old[$id] } }    # missed one scan: keep 10 min
+    # missed by this scan: keep it for 10 minutes, and as long as it still answers (a scan can miss a station it can poll)
+    foreach ($id in $old.Keys) { if (-not $found.ContainsKey($id) -and -not $gone[$id] -and (((Sp-Now) - [int64]$old[$id].seen) -lt 600 -or (Polled-Recently $id))) { $found[$id] = $old[$id] } }
     $list = @($found.Values | Sort-Object { - [int64]$_.seen } | Select-Object -First ($SpMax - 1))
     Sp-Write (Join-Path $SpSync 'peers.json') $list
     Sp-Write (Join-Path $SpSync 'others.json') ([ordered]@{ n = $others; at = (Sp-Now) })
+    # what the search saw (admin page): which networks, how many addresses, how many answered
+    $nets = @(if ($env:SP_SCAN) { 'test list' } else { foreach ($ip in Sp-LanIPs) { "$($ip.IPAddress)/$($ip.PrefixLength)" } })
+    Sp-Write (Join-Path $SpSync 'search.json') ([ordered]@{ at = (Sp-Now); nets = $nets; targets = $targets.Count; open = $hosts.Count; printers = $answered
+        found = @($list | Where-Object { [int64]$_.seen -ge (Sp-Now) - 60 }).Count })
     foreach ($x in $list) { if (-not $old.ContainsKey([string]$x.id)) { [void](Sp-Peer $x '/sync/announce' $null $null 2000) } }    # new here: they look again at once
+}
+function Polled-Recently([string]$id) { $st = Sp-Read (Join-Path $SpSt "$id.json"); $st -and ((Sp-Now) - [int64]$st.at) -le $SpFresh }
+function Learn-Stations {    # stations that contacted us before we found them (Sync\learn\<id>.json): check them at their own address, then add them
+    $g = Sp-Group; if (-not $g) { return }
+    $dir = Join-Path $SpSync 'learn'; $files = @(Get-ChildItem $dir -Filter *.json -EA SilentlyContinue | Select-Object -First 10); if (-not $files.Count) { return }
+    $have = @{}; foreach ($x in Sp-Peers) { $have[[string]$x.id] = 1 }; $add = @()
+    foreach ($f in $files) {
+        $id = $f.BaseName; $l = Sp-Read $f.FullName; Remove-Item $f.FullName -Force -EA SilentlyContinue
+        if ($id -cnotmatch '^[0-9a-f]{32}$' -or $have[$id] -or -not $l -or [string]$l.ip -notmatch '^[\d.]+$') { continue }
+        $url = "http://$($l.ip):$([int]$l.port)"; $r = Sp-Http $url 'GET' '/sync/hello' $null $null 2000; $h = if ($r.code -eq 200) { Sp-Json $r } else { $null }
+        if (-not $h -or [string]$h.id -ne $id -or [string]$h.gid -ne $g.gid -or -not (Sp-PinOk $g $id ([string]$h.pk) ([string]$h.pkmac))) { continue }
+        $add += [ordered]@{ id = $id; url = $url; pk = [string]$h.pk; station = ([string]$h.station -replace '[\x00-\x1f<>"\\]', ''); seen = (Sp-Now) }; $have[$id] = 1
+    }
+    if ($add.Count) { Sp-Write (Join-Path $SpSync 'peers.json') @(@(Sp-Peers) + $add | Select-Object -First ($SpMax - 1)) }
 }
 function Poll-Stations {    # every station's /sync/status at once -> Sync\st\<id>.json (or .err)
     $g = Sp-Group; if (-not $g) { return }
@@ -469,6 +489,7 @@ while ($true) {
         $now = Join-Path $SpSync 'scan-now'
         $every = if (((Get-Date) - $started).TotalSeconds -lt 180) { 15 } else { 60 }    # the first 3 minutes: look often, stations start at different times
         if (($t0 - $lastFind).TotalSeconds -ge $every -or (Test-Path $now)) { Remove-Item $now -Force -EA SilentlyContinue; $lastFind = $t0; try { Find-Stations } catch {} }
+        try { Learn-Stations } catch {}
         try { Poll-Stations } catch {}
         try { Adopt-Domain } catch {}
     }

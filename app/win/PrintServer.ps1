@@ -205,9 +205,15 @@ while ($listener.IsListening) {
             $x = $null; try { $x = Sp-Open $req $body } catch {}
             if (-not $x) { Json $res 401 @{ error = 'SIGNATURE'; time = (Sp-Now) }; continue }
             $from = $x.from; $mt = $x.meta; $pl = $x.payload
-            # a station that knows us but we do not know it (its announce got lost): look again now, not in a minute
-            $sn = Join-Path $SpSync 'scan-now'
-            if (-not (Test-Path $sn) -and -not (Sp-Peers | Where-Object { $_.id -eq $from })) { [IO.File]::WriteAllText($sn, '') }
+            # a station that knows us but we do not know it: learn it from this very contact (its address is right here),
+            # and look again now - so if either side finds the other, both know each other
+            if (-not (Sp-Peers | Where-Object { $_.id -eq $from })) {
+                $ra = $req.RemoteEndPoint.Address; if ($ra.IsIPv4MappedToIPv6) { $ra = $ra.MapToIPv4() }
+                $pt = [string]$req.Headers['X-Sync-Port']; if ($pt -notmatch '^\d{2,5}$') { $pt = "$SpPort" }
+                if ($ra.AddressFamily -eq 'InterNetwork') { $ld = Join-Path $SpSync 'learn'; New-Item -ItemType Directory $ld -Force | Out-Null
+                    Sp-Write (Join-Path $ld "$from.json") ([ordered]@{ ip = $ra.ToString(); port = [int]$pt; at = (Sp-Now) }) }
+                $sn = Join-Path $SpSync 'scan-now'; if (-not (Test-Path $sn)) { [IO.File]::WriteAllText($sn, '') }
+            }
             if ($path -eq '/sync/announce') { Sp-SJson $res $x 200 @{ ok = $true }; continue }
             if ($path -eq '/sync/status') {
                 $f = Join-Path $SpSync 'self.json'

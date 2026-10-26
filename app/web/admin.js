@@ -67,6 +67,9 @@
       if (n.others) sub.push(L('netOthers', { n: n.others }));
       sub.push(n.lastScan >= 0 ? L('netScanned', { s: n.lastScan }) : L('netScanning'));
       $('netsub').textContent = sub.join(' · ');
+      var sr = n.search;    // what the last search saw: shows why a station finds nobody
+      $('netdiag').textContent = !n.joined || !sr ? '' : +sr.targets === 0 ? L('netDiagNone')
+        : L('netDiag', { t: +sr.targets, nets: (sr.nets || []).join(', '), o: +sr.open, p: +sr.printers });
       if (!stnEdited && document.activeElement !== $('stn')) { $('stn').value = n.station; stnCheck(); }
       if (!domEdited && document.activeElement !== $('dom')) { $('dom').value = n.domain || ''; domCheck(); }
       $('tgdns').setAttribute('aria-checked', n.dns && !!n.domain); $('tgdns').disabled = !n.domain;

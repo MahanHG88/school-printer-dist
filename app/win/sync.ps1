@@ -337,7 +337,7 @@ function Sp-Seal($x, [string]$path, $meta, [byte[]]$payload) {    # -> @{ ct; hd
     $g = Sp-Group; if (-not $g -or [string]$x.pk -cnotmatch '^[0-9a-f]{512}$') { return $null }
     $k = Sp-PairKeys $g ([string]$x.id) ([string]$x.pk); $i = Sp-Identity; $id = Sp-NodeId; $t = Sp-Now; $n = Sp-Rand 16
     $ct = [SpCrypto]::Ctr($k.e, (Sp-Iv $k.mk 'req' $n), (Sp-Envelope $meta $payload))
-    @{ ct = $ct; n = $n; k = $k; hdr = [ordered]@{ 'X-Sync-Node' = $id; 'X-Sync-Time' = "$t"; 'X-Sync-Nonce' = $n; 'X-Sync-Pk' = [string]$i.pk; 'X-Sync-Pkmac' = (Sp-PkMac $g $id ([string]$i.pk))
+    @{ ct = $ct; n = $n; k = $k; hdr = [ordered]@{ 'X-Sync-Port' = "$SpPort"; 'X-Sync-Node' = $id; 'X-Sync-Time' = "$t"; 'X-Sync-Nonce' = $n; 'X-Sync-Pk' = [string]$i.pk; 'X-Sync-Pkmac' = (Sp-PkMac $g $id ([string]$i.pk))
         'X-Sync-Sig' = (Sp-Hex (Sp-HmacRaw $k.mk $SpUtf8.GetBytes("req`n$t`nPOST`n$path`n$id`n$n`n" + (Sp-Hex (Sp-Sha256 $ct))))) } }
 }
 function Sp-Unseal($sl, [int]$code, [byte[]]$body, [string]$mac) {    # answer -> plain bytes, or $null if not sealed by that station
@@ -571,6 +571,6 @@ function Sp-NetInfo($c) {
     $alerts = @(foreach ($k in @($al.Keys | Sort-Object)) { if ((Sp-Now) - [int64]$al[$k].at -lt 86400) { [ordered]@{ id = $k; station = $(if ($names[$k]) { $names[$k] } else { $k.Substring(0, 8) }); at = [int64]$al[$k].at } } })
     [ordered]@{ ok = $true; joined = [bool]$g; alerts = $alerts; crypto = $true; mode = $(if ($g) { $g.mode } else { 'alone' }); token = $(if ($tk) { [string]$tk.t } else { '' }); tokenLeft = $(if ($tk) { [int64]$tk.until - (Sp-Now) } else { 0 })
                 gid = $(if ($g) { [string]$g.gid } else { '' }); station = (Sp-StationName $c); share = ($c.share -ne '0'); accept = ($c.accept -ne '0')
-                conv = ($c.conv -ne '0'); others = $(if ($g -and $o) { [int]$o.n } else { 0 }); lastScan = $last; max = $SpMax; stations = $rows
+                conv = ($c.conv -ne '0'); others = $(if ($g -and $o) { [int]$o.n } else { 0 }); lastScan = $last; search = $(if ($g) { Sp-Read (Join-Path $SpSync 'search.json') }); max = $SpMax; stations = $rows
                 main = (Sp-Leader).id; alias = "http://$($SpAlias):$SpPort" }
 }
