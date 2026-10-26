@@ -13,10 +13,10 @@
 # non-ASCII character: in a UTF-8 locale bash 3.2 reads "$MU·" as a variable named "MU·" (seen 2026-10-20).
 set -euo pipefail
 
-VERSION="1.5.1"
+VERSION="1.6.0"
 BASE="https://print.mahanmirzaee.com/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
 PORT=8631
-FILES=("unix/schoolprinter.pl:788BD46A5868A94B25F2CCBAAC35231097DC078C1D4D198AED71720A3B95BE93:39319" "web/admin.html:0363FA14A2FEF69F97EEF99531F94D232DAFD4933601E0F6CE0DBFD48FEA2EAF:3575" "web/admin.js:18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5:3804" "web/app.css:B325628E2D24E680509CA4EBF6D682D9C4CE374A14C458C1258F715BCC46E032:14238" "web/i18n.js:00EA4B3843DD9B7D096862DABAC8C24EC65B2942E40066FE9230646A3D39B39D:14512" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:5F5A21D3E84973C5C464BE7943382BE4AA44BD298D49FB7DF522E89E265DDF0A:7435" "web/print.js:B96BC982123F8A06EDE21CAF90C2A1BE87565B29E025318D187CF5057A7D4532:21112" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:30BBEEECB84D964404A6BA809B26FB4FFA3A0FD1222099970F53F75D6F2A5FDF:104933" "web/admin.html:0454E6EC8A89DE07B9778013AF5F6BE5D18B78F379ECAB4FCDAD319EFA686C09:7570" "web/admin.js:B9DAC0CA67D2FAC7384A82FF9512740CE164DA15DDA7C82E2EEEF52731A79C9E:12042" "web/app.css:5D12D643F632D022034EAB5693578C9730D07DAE3FD3F633DBFBBCBB883F6ADA:22194" "web/i18n.js:6E52BB722C168AC0BFDEA0D85D2E7A49D8D6A14F6783CD26063BF11BD49E0543:31241" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:04EC3A440FBAA477CB0BA7223DCCFADF3207ABCFF52F52C21DB3D72EA7E81C20:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
@@ -200,7 +200,9 @@ printer="$(getv printer)"; pin="$(getv pin)"; open="$(getv open)"; lang="$(getv 
 : "${open:=1}"; : "${lang:=fa}"
 list=(); while IFS= read -r line; do [ -n "$line" ] && list+=("$line"); done < <(lpstat -e 2>/dev/null || true)
 if [ -n "$printer" ] && printf '%s\n' "${list[@]:-}" | grep -qxF "$printer"; then kept="  (kept)"
-elif [ "${#list[@]}" -eq 0 ]; then fail printer "No printers are set up on this computer." "Add the printer in the system settings, print a test page, then run this again."
+elif [ "${#list[@]}" -eq 0 ]; then    # no printer: fine for a computer that only has a scanner (SANE)
+    if command -v scanimage >/dev/null && scanimage -L 2>/dev/null | grep -q '^device'; then printer=""; kept="no printer - a scan station"
+    else fail printer "No printers or scanners are set up on this computer." "Add the printer (or connect the scanner and install SANE: sudo apt install sane-utils), then run this again."; fi
 elif [ "${#list[@]}" -eq 1 ]; then printer="${list[0]}"
 else
     def="$(lpstat -d 2>/dev/null | sed -n 's/^.*: //p')"; lines=("${B}Which printer should everyone use?${R}")
@@ -210,9 +212,11 @@ else
         if [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 1 ] && [ "$a" -le "${#list[@]}" ]; then printer="${list[$((a - 1))]}"; break; fi
     done
 fi
-printf '# School Printer settings (also changeable on the admin page)\nprinter=%s\npin=%s\nopen=%s\nlang=%s\n' "$printer" "$pin" "$open" "$lang" > "$cfg"
+extra="$( [ -f "$cfg" ] && grep -E '^[[:space:]]*(station|share|accept|conv|domain|domainAt|dns)[[:space:]]*=' "$cfg" || true )"    # the network settings stay
+printf '# School Printer settings (also changeable on the admin page)\nprinter=%s\npin=%s\nopen=%s\nlang=%s\n%s\n' "$printer" "$pin" "$open" "$lang" "$extra" | sed '/^$/d' > "$cfg"
 chown -R nobody "$DIR/Uploads" "$cfg"; chown nobody "$DIR"; [ -f "$DIR/log.txt" ] && chown nobody "$DIR/log.txt"
-finish printer "$printer$kept"
+mkdir -p "$DIR/Sync"; chown -R nobody "$DIR/Sync"; chmod 700 "$DIR/Sync"    # the printing network's key: only the service can read it
+finish printer "${printer:-}$kept"
 
 # ---------------------------------------------------------------- 5. service
 begin service
@@ -242,9 +246,11 @@ Wants=network-online.target
 [Service]
 ExecStart=/usr/bin/env perl $DIR/schoolprinter.pl
 User=nobody
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
+$(getent group scanner >/dev/null 2>&1 && echo 'SupplementaryGroups=scanner    # USB scanners (SANE)')
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
@@ -261,10 +267,10 @@ begin network
 if [ "$OS" = Linux ]; then
     net="$(ip -4 route 2>/dev/null | awk '/proto kernel/ && /scope link/ && $1 !~ /^(172\.17\.|169\.254\.)/ {print $1; exit}')"
     if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw allow from "${net:-192.168.0.0/16}" to any port $PORT proto tcp comment 'School Printer' >/dev/null
-        finish network "ufw: port $PORT from ${net:-the local network} only"
+        for pp in "$PORT/tcp" 80/tcp 53/udp; do ufw allow from "${net:-192.168.0.0/16}" to any port "${pp%/*}" proto "${pp#*/}" comment 'School Printer' >/dev/null; done
+        finish network "ufw: ports $PORT, 80 (page) and 53 (school address) from ${net:-the local network} only"
     elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-        firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=${net:-192.168.0.0/16} port port=$PORT protocol=tcp accept" >/dev/null
+        for pp in "$PORT/tcp" 80/tcp 53/udp; do firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=${net:-192.168.0.0/16} port port=${pp%/*} protocol=${pp#*/} accept" >/dev/null; done
         firewall-cmd --reload >/dev/null; finish network "firewalld: port $PORT from ${net:-the local network} only"
     else finish network "no firewall active - port $PORT reachable on the local network"; fi
 else
@@ -281,11 +287,21 @@ if [ -n "$u" ] && [ "$u" != root ] && [ "$u" != loginwindow ]; then
         if [ "$OS" = Darwin ]; then
             printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>URL</key><string>http://localhost:%s/admin</string></dict></plist>\n' $PORT > "$home/Desktop/School Printer (Admin).webloc"
             chown "$u" "$home/Desktop/School Printer (Admin).webloc"
+            L=com.mahanmirzaee.schoolprinter
+            printf '#!/bin/bash\n# Start School Printer, then open its admin page\nosascript -e '"'"'do shell script "launchctl bootstrap system /Library/LaunchDaemons/%s.plist 2>/dev/null; launchctl kickstart system/%s" with administrator privileges'"'"' >/dev/null || exit 1\nfor i in $(seq 1 30); do curl -fs -o /dev/null http://localhost:%s/status && break; sleep 0.5; done\nopen http://localhost:%s/admin\nosascript -e '"'"'tell application "Terminal" to close (every window whose name contains "Start School Printer")'"'"' >/dev/null 2>&1 &\n' $L $L $PORT $PORT > "$home/Desktop/Start School Printer.command"
+            printf '#!/bin/bash\n# Stop School Printer (it starts again with the Mac, or with "Start School Printer")\nosascript -e '"'"'do shell script "launchctl bootout system/%s" with administrator privileges'"'"' >/dev/null && osascript -e '"'"'display dialog "School Printer is stopped. Nobody can print or scan here until you start it again." buttons {"OK"} with title "School Printer"'"'"' >/dev/null\n' $L > "$home/Desktop/Stop School Printer.command"
+            chmod 755 "$home/Desktop/Start School Printer.command" "$home/Desktop/Stop School Printer.command"; chown "$u" "$home/Desktop/Start School Printer.command" "$home/Desktop/Stop School Printer.command"
         else
             f="$home/Desktop/school-printer-admin.desktop"
             printf '[Desktop Entry]\nType=Link\nName=School Printer (Admin)\nIcon=printer\nURL=http://localhost:%s/admin\n' $PORT > "$f"; chown "$u" "$f"; chmod 755 "$f"
+            printf '#!/bin/sh\n# Start School Printer, then open its admin page (desktop shortcut)\npkexec systemctl start schoolprinter || exit 1\nfor i in $(seq 1 30); do curl -fs -o /dev/null http://localhost:%s/status && break; sleep 0.5; done\nxdg-open http://localhost:%s/admin\n' $PORT $PORT > "$DIR/start.sh"
+            printf '#!/bin/sh\n# Stop School Printer (desktop shortcut); it starts again with the computer\npkexec systemctl stop schoolprinter\n' > "$DIR/stop.sh"
+            chmod 755 "$DIR/start.sh" "$DIR/stop.sh"
+            printf '[Desktop Entry]\nType=Application\nName=Start School Printer\nIcon=media-playback-start\nExec=%s/start.sh\nTerminal=false\n' "$DIR" > "$home/Desktop/school-printer-start.desktop"
+            printf '[Desktop Entry]\nType=Application\nName=Stop School Printer\nIcon=media-playback-stop\nExec=%s/stop.sh\nTerminal=false\n' "$DIR" > "$home/Desktop/school-printer-stop.desktop"
+            chown "$u" "$home/Desktop/school-printer-start.desktop" "$home/Desktop/school-printer-stop.desktop"; chmod 755 "$home/Desktop/school-printer-start.desktop" "$home/Desktop/school-printer-stop.desktop"
         fi
-        notes+=("desktop shortcut")
+        notes+=("desktop shortcuts: Admin, Start, Stop")
     fi
 fi
 state=done

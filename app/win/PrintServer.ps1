@@ -1,36 +1,29 @@
 # PrintServer.ps1 - School Printer web server for Windows (https://print.mahanmirzaee.com)
-#   Everyone on the network:  http://<this PC>:8631        upload, preview, choose settings, print
+#   Everyone on the network:  http://<this PC>:8631  (and port 80 when it is free)   upload, preview, print, scan
 #   On this PC only:          http://localhost:8631/admin  (desktop shortcut "School Printer (Admin)")
-# Flow: POST /upload -> Uploads\<id>.<ext> (+ <id>.todo for Office files, converted by convert.ps1 in the
-# signed-in user's session) -> GET /file/<id> for the preview -> POST /print {id, settings} -> Inbox\ job
-# that watch.ps1 prints. Runs as SYSTEM from the task "MacPrint Web". PowerShell 5.1, nothing to install.
+# Flow: POST /upload -> Uploads\<id>.<ext> (+ <id>.todo for Office files, converted by convert.ps1 in the signed-in
+# user's session, or <id>.remote: converted on the station with the most free power) -> GET /file/<id> for the
+# preview -> POST /print {id, settings, target} -> Inbox\ job that watch.ps1 prints, or Outbox\ job that syncd.ps1
+# sends to another station. Runs as SYSTEM from the task "MacPrint Web". PowerShell 5.1, nothing to install.
+# The printing network (several stations, one address, scanners): see sync.ps1 and syncd.ps1.
 
 $root    = if ($env:SP_ROOT) { $env:SP_ROOT } else { 'C:\ProgramData\MacPrint' }   # SP_ROOT / SP_PORT: test copies only
 $inbox   = Join-Path $root 'Inbox'
 $up      = Join-Path $root 'Uploads'
 $web     = Join-Path $root 'web'
-$cfgFile = Join-Path $root 'config.txt'
-$logFile = Join-Path $root 'log.txt'
 $port    = if ($env:SP_PORT) { [int]$env:SP_PORT } else { 8631 }
 $maxMB   = 50
 Add-Type -AssemblyName System.Drawing
+. (Join-Path $PSScriptRoot 'sync.ps1')
 
 $BaseTypes   = @('pdf', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff')
 $OfficeTypes = @('doc', 'docx', 'rtf', 'odt', 'txt', 'xls', 'xlsx', 'csv', 'ods', 'ppt', 'pptx', 'odp')
 $Mime = @{ '.html' = 'text/html; charset=utf-8'; '.css' = 'text/css; charset=utf-8'; '.js' = 'application/javascript; charset=utf-8'
            '.pdf' = 'application/pdf'; '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.jpeg' = 'image/jpeg'; '.gif' = 'image/gif'; '.woff2' = 'font/woff2' }
 
-function Get-Cfg {
-    $c = @{ pin = ''; open = '1'; printer = ''; lang = 'fa' }
-    if (Test-Path $cfgFile) {
-        Get-Content $cfgFile -Encoding UTF8 | ForEach-Object { if ($_ -match '^\s*(\w+)\s*=\s*(.*)$') { $c[$Matches[1]] = $Matches[2].Trim() } }
-    }
-    if (-not $c.printer) { $c.printer = (Get-CimInstance Win32_Printer -Filter 'Default=TRUE' -EA SilentlyContinue).Name }
-    $c
-}
-function Save-Cfg($c) {
-    Set-Content $cfgFile @('# School Printer settings (also changeable on the admin page)', "printer=$($c.printer)", "pin=$($c.pin)", "open=$($c.open)", "lang=$($c.lang)") -Encoding UTF8
-}
+function Get-Cfg { Sp-Cfg }
+function Get-Caps($printer) { Sp-Caps $printer }
+function Waiting { Sp-Waiting }
 
 function Send($res, $code, $type, [byte[]]$b, $cache) {
     $res.StatusCode = $code
@@ -41,64 +34,38 @@ function Send($res, $code, $type, [byte[]]$b, $cache) {
     $res.OutputStream.Write($b, 0, $b.Length)
     $res.OutputStream.Close()
 }
-function Json($res, $code, $obj) { Send $res $code 'application/json; charset=utf-8' ([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -Compress -Depth 5 -InputObject $obj))) }
+function Json($res, $code, $obj) { Send $res $code 'application/json; charset=utf-8' ([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -Compress -Depth 8 -InputObject $obj))) }
 function SendFile($res, $path, $cache) {
     $ext = [IO.Path]::GetExtension($path).ToLower()
     $type = if ($Mime[$ext]) { $Mime[$ext] } else { 'application/octet-stream' }
     Send $res 200 $type ([IO.File]::ReadAllBytes($path)) $cache
 }
+function Redirect($res, $url) { $res.StatusCode = 302; $res.RedirectLocation = $url; $res.Headers.Add('Cache-Control', 'no-store'); $res.ContentLength64 = 0; $res.OutputStream.Close() }
 
-function Waiting { @(Get-ChildItem $inbox -File -Filter *.json -EA SilentlyContinue).Count + @(Get-ChildItem $inbox -File -Filter *.pdf -EA SilentlyContinue | Where-Object { -not (Test-Path ([IO.Path]::ChangeExtension($_.FullName, '.json'))) }).Count }
-
-# ---- printer capabilities (paper sizes from the driver, colour, duplex, unprintable edge) - cached 60 s
-$script:capsCache = @{ printer = ''; at = [datetime]::MinValue; caps = $null }
-function Get-Caps($printer) {
-    if ($script:capsCache.printer -eq $printer -and ((Get-Date) - $script:capsCache.at).TotalSeconds -lt 60) { return $script:capsCache.caps }
-    $caps = @{ papers = @(); def = ''; color = $false; duplex = $false; hm = 4.2 }
-    try {
-        $ps = New-Object System.Drawing.Printing.PrinterSettings
-        $ps.PrinterName = $printer
-        if ($ps.IsValid) {
-            $seen = @{}
-            $papers = foreach ($p in $ps.PaperSizes) {
-                if ($p.Width -gt 0 -and $p.Height -gt 0 -and $p.Kind -ne 'Custom' -and -not $seen[$p.PaperName]) {
-                    $seen[$p.PaperName] = 1
-                    @{ n = $p.PaperName; w = [math]::Round([math]::Min($p.Width, $p.Height) * 0.254, 1); h = [math]::Round([math]::Max($p.Width, $p.Height) * 0.254, 1) }
-                }
-            }
-            $dp = $ps.DefaultPageSettings
-            $caps = @{ papers = @($papers); def = $dp.PaperSize.PaperName; color = $ps.SupportsColor; duplex = $ps.CanDuplex
-                       hm = [math]::Round([math]::Max($dp.HardMarginX, $dp.HardMarginY) * 0.254, 1) }
-        }
-    } catch {}
-    $script:capsCache = @{ printer = $printer; at = Get-Date; caps = $caps }
+# ---- Word/Excel/PowerPoint here, or on another station (peer)
+function Get-Office { $o = Sp-LocalOffice; if ($o -notin 'office', 'lo' -and @(Sp-ConvPeers (Get-Cfg)).Count) { 'peer' } else { $o } }
+function Get-Types($office) { if ($office -in 'office', 'lo', 'peer') { $BaseTypes + $OfficeTypes } else { $BaseTypes } }
+function Net-Caps($c) {    # this printer's paper sizes; colour / two-sided when any connected printer has them (the job goes there)
+    $caps = (Get-Caps $c.printer).Clone()
+    if (Sp-Group) { foreach ($x in @(Sp-Stations | Where-Object { $_.online -and $_.s.ready })) { if ($x.s.color) { $caps.color = $true }; if ($x.s.duplex) { $caps.duplex = $true } } }
     $caps
 }
 
-# ---- Word/Excel/PowerPoint: converted by convert.ps1 in the signed-in user's session (Office will not run as SYSTEM)
-function Get-Office {
-    $hasMs = Test-Path 'Registry::HKEY_CLASSES_ROOT\Word.Application\CLSID'
-    $hasLo = (Test-Path 'C:\Program Files\LibreOffice\program\soffice.exe') -or (Test-Path 'C:\Program Files (x86)\LibreOffice\program\soffice.exe')
-    if (-not ($hasMs -or $hasLo)) { return 'none' }
-    $alive = Join-Path $up 'converter.alive'
-    if ((Test-Path $alive) -and ((Get-Date) - (Get-Item $alive).LastWriteTime).TotalSeconds -lt 20) { if ($hasMs) { 'office' } else { 'lo' } } else { 'signin' }
-}
-function Get-Types($office) { if ($office -eq 'office' -or $office -eq 'lo') { $BaseTypes + $OfficeTypes } else { $BaseTypes } }
-
 function Get-Info {
     $c = Get-Cfg
-    $urls = @(Get-NetIPAddress -AddressFamily IPv4 -EA SilentlyContinue |
-        Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' -and $_.InterfaceAlias -notmatch 'vEthernet|Loopback|WSL|VirtualBox|VMware' } |
-        ForEach-Object { "http://$($_.IPAddress):$port" })
-    $pr = Get-Printer -Name $c.printer -EA SilentlyContinue
+    $urls = @(Sp-LanIPs | ForEach-Object { "http://$($_.IPAddress):$port" })
+    if (Sp-Group) { $l = Sp-Leader; if ($l.id -ne (Sp-NodeId)) { $urls = @([string]$l.url) }; $urls = @("http://$($SpAlias):$port") + $urls; if ($c.domain) { $urls = @("http://$($c.domain)") + $urls } }
+    $pr = if ($c.printer) { Get-Printer -Name $c.printer -EA SilentlyContinue } else { $null }
     $pstat = 'Not found'
     if ($pr) { $pstat = "$($pr.PrinterStatus)"; if ($pr.WorkOffline) { $pstat = 'Offline' } }
     $log = @()
-    if (Test-Path $logFile) { $log = @(Get-Content $logFile -Tail 15 | ForEach-Object { [string]$_ }); [array]::Reverse($log) }
+    if (Test-Path $SpLog) { $log = @(Get-Content $SpLog -Tail 15 -Encoding UTF8 | ForEach-Object { [string]$_ }); [array]::Reverse($log) }
+    $net = Sp-NetInfo $c; $net.domain = [string]$c.domain; $net.dns = ($c.dns -ne '0'); $net.dnsState = Dns-State
     @{ urls = $urls; name = "http://$($env:COMPUTERNAME):$port"; open = ($c.open -ne '0'); lang = $c.lang; pin = $c.pin; printer = $c.printer
-       printers = @(Get-Printer -EA SilentlyContinue | ForEach-Object { [string]$_.Name }); pstatus = $pstat; waiting = (Waiting)
-       jobs = @(Get-PrintJob -PrinterName $c.printer -EA SilentlyContinue).Count; log = $log; office = (Get-Office) }
+       printers = @(Sp-RealPrinters); pstatus = $pstat; waiting = (Waiting)
+       jobs = @(if ($c.printer) { Get-PrintJob -PrinterName $c.printer -EA SilentlyContinue }).Count; log = $log; office = (Get-Office); net = $net }
 }
+function Dns-State { $s = Sp-Read (Join-Path $SpSync 'dns.json'); if ($s -and ((Sp-Now) - [int64]$s.at) -lt 30) { [string]$s.state } else { 'off' } }
 
 # ---- file checks: the extension must match the file's real first bytes
 function Test-Magic($path, $ext) {
@@ -141,9 +108,39 @@ function Clean-Uploads {
         Remove-Item -Force -EA SilentlyContinue
 }
 function Read-Body($req) { (New-Object IO.StreamReader($req.InputStream, [Text.Encoding]::UTF8)).ReadToEnd() }
+function Save-Body($req, $path) {    # request body -> file; $false when bigger than 50 MB
+    $fs = [IO.File]::Create($path); $buf = New-Object byte[] 65536; $total = 0; $ok = $true
+    while (($n = $req.InputStream.Read($buf, 0, $buf.Length)) -gt 0) { $total += $n; if ($total -gt $maxMB * 1MB) { $ok = $false; break }; $fs.Write($buf, 0, $n) }
+    $fs.Close(); if (-not $ok) { Remove-Item $path -Force -EA SilentlyContinue }
+    $ok
+}
 
 $sets = @{ orientation = 'auto', 'portrait', 'landscape'; color = 'color', 'gray'; duplex = 'off', 'long', 'short'
            margins = 'none', 'narrow', 'normal', 'wide'; scale = 'fit', 'actual' }
+function Norm-Job($j, $caps) {    # settings from the print page or another station -> clean settings, or $null
+    $copies = 1; [void][int]::TryParse([string]$j.copies, [ref]$copies); $copies = [Math]::Min([Math]::Max($copies, 1), 20)
+    $nup = 1; [void][int]::TryParse([string]$j.nup, [ref]$nup)
+    foreach ($k in $sets.Keys) { if ([string]$j.$k -notin $sets[$k]) { return $null } }
+    if ($nup -notin 1, 2, 4 -or [string]$j.pages -notmatch '^[0-9,\-\s]{0,200}$') { return $null }
+    $paper = [string]$j.paper; $p = $caps.papers | Where-Object { $_.n -eq $paper } | Select-Object -First 1
+    if (-not $p -and [string]$j.pw -match '^[\d.]+$' -and [string]$j.ph -match '^[\d.]+$') {    # another station's paper name: match by size
+        $a = [math]::Min([double]$j.pw, [double]$j.ph); $b = [math]::Max([double]$j.pw, [double]$j.ph)
+        $p = $caps.papers | Where-Object { [math]::Abs($_.w - $a) -lt 2 -and [math]::Abs($_.h - $b) -lt 2 } | Select-Object -First 1
+    }
+    $sheets = 0; [void][int]::TryParse([string]$j.sheets, [ref]$sheets); if ($sheets -lt 1) { $sheets = $copies }
+    @{ copies = $copies; pages = [string]$j.pages; paper = $(if ($p) { $p.n } else { $caps.def }); pw = $(if ($p) { $p.w } else { '' }); ph = $(if ($p) { $p.h } else { '' })
+       orientation = [string]$j.orientation; color = $(if ($caps.color) { [string]$j.color } else { 'gray' }); duplex = $(if ($caps.duplex) { [string]$j.duplex } else { 'off' })
+       margins = [string]$j.margins; scale = [string]$j.scale; nup = $nup; land = [bool]$j.land; sheets = [math]::Min($sheets, 5000) }
+}
+function Add-Job([string]$src, [string]$ext, [string]$base, $job, $x, [bool]$picked) {    # document + settings -> Inbox (print here) or Outbox (send to $x)
+    $dir = $inbox; $pre = ''
+    if ($x) { $dir = $SpOut; $pre = "$($x.id)~"; $job.picked = $picked; $job.first = (Sp-Now) }
+    $job.file = "$pre$base$ext"
+    Move-Item -LiteralPath $src -Destination (Join-Path $dir "$pre$base$ext") -Force
+    [IO.File]::WriteAllText((Join-Path $dir "$pre$base.tmp"), (ConvertTo-Json -Compress -InputObject $job), [Text.Encoding]::UTF8)
+    Move-Item (Join-Path $dir "$pre$base.tmp") (Join-Path $dir "$pre$base.json") -Force
+}
+function Spool-Count($c) { @(if ($c.printer) { Get-PrintJob -PrinterName $c.printer -EA SilentlyContinue }).Count }
 
 New-Item -ItemType Directory -Path $inbox, $up -Force | Out-Null
 $pages = @{}
@@ -151,13 +148,16 @@ foreach ($p in 'print', 'admin') {
     $f = Join-Path $web "$p.html"
     $pages[$p] = if (Test-Path $f) { [IO.File]::ReadAllBytes($f) } else { [Text.Encoding]::UTF8.GetBytes("missing $f - run the installer again") }
 }
+$probe = New-Object byte[] 1048576; (New-Object Random 7).NextBytes($probe)     # 1 MB for the other stations' speed test
 
+# port 8631 always; port 80 too when nothing else uses it, so "http://<school address>" works without :8631
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://+:$port/")
-$listener.Start()
+if (-not $env:SP_PORT) { $listener.Prefixes.Add('http://+:80/') }
+try { $listener.Start() } catch { $listener = New-Object System.Net.HttpListener; $listener.Prefixes.Add("http://+:$port/"); $listener.Start() }
 
 . (Join-Path $PSScriptRoot 'ipp.ps1')                     # "Add to this device": the printer as a real IPP printer
-$c0 = Get-Cfg; [void](Ipp-Announce $c0 (Get-Caps $c0.printer) $port)
+$c0 = Get-Cfg; if (-not $env:SP_NOMDNS) { [void](Ipp-Announce $c0 (Get-Caps $c0.printer) $port) } else { $script:IppUuid = [guid]::NewGuid().ToString() }
 
 while ($listener.IsListening) {
     $ctx = $listener.GetContext()
@@ -184,7 +184,126 @@ while ($listener.IsListening) {
 
         # ------------------------------------------------ IPP printer (devices that added "School Printer")
         if ($m -eq 'POST' -and ($path -eq '/ipp/print' -or $path -like '/ipp/print/*')) {
-            $c = Get-Cfg; Ipp-Handle $ctx $c (Get-Caps $c.printer); continue
+            $c = Get-Cfg; Ipp-Handle $ctx $c (Net-Caps $c); continue
+        }
+
+        # ------------------------------------------------ printing network
+        if ($m -eq 'GET' -and $path -eq '/sync/hello') {    # public: lets other stations find this one (gid says which network)
+            $c = Get-Cfg; $g = Sp-Group
+            Json $res 200 ([ordered]@{ app = 'school-printer'; proto = 1; id = (Sp-NodeId); station = (Sp-StationName $c); gid = $(if ($g) { [string]$g.gid } else { '' }) }); continue
+        }
+        if ($path -like '/sync/*') {
+            $from = Sp-Auth $req
+            if (-not $from) { Json $res 401 @{ error = 'SIGNATURE'; time = (Sp-Now) }; continue }
+            if ($m -eq 'POST' -and $path -eq '/sync/announce') {
+                if (-not (Sp-Peers | Where-Object { $_.id -eq $from })) { [IO.File]::WriteAllText((Join-Path $SpSync 'scan-now'), '') }
+                Json $res 200 @{ ok = $true }; continue
+            }
+            if ($m -eq 'GET' -and $path -eq '/sync/status') {
+                $f = Join-Path $SpSync 'self.json'
+                if (Test-Path $f) { Send $res 200 'application/json; charset=utf-8' ([IO.File]::ReadAllBytes($f)) } else { Json $res 503 @{ error = 'STARTING' } }
+                continue
+            }
+            if ($m -eq 'GET' -and $path -eq '/sync/probe') { Send $res 200 'application/octet-stream' $probe; continue }
+            if ($m -eq 'POST' -and $path -eq '/sync/job') {
+                $c = Get-Cfg
+                if ($c.accept -eq '0' -or $c.open -eq '0') { Json $res 403 @{ error = 'NOT_ACCEPTING' }; continue }
+                $mj = $null; try { $mj = $SpUtf8.GetString([Convert]::FromBase64String([string]$req.Headers['X-Job'])) | ConvertFrom-Json } catch {}
+                $ext = if ($mj) { [string]$mj.ext } else { '' }
+                if ($ext -notin 'pdf', 'png', 'jpg', 'gif') { Json $res 415 @{ error = "This type of file can't be printed." }; continue }
+                $s = Norm-Job $mj (Get-Caps $c.printer); if (-not $s) { Json $res 400 @{ error = 'Bad settings.' }; continue }
+                $tmp = Join-Path $up ((Sp-Rand 16) + '.part')
+                if (-not (Save-Body $req $tmp)) { Json $res 413 @{ error = 'File is bigger than 50 MB.' }; continue }
+                if (-not (Test-Magic $tmp $ext)) { Remove-Item $tmp -Force; Json $res 415 @{ error = "This type of file can't be printed." }; continue }
+                $x = Sp-Stations | Where-Object { $_.id -eq $from } | Select-Object -First 1
+                $via = (([string]$(if ($x) { $x.station } else { 'station' })) -replace '[^A-Za-z0-9_]+', '_'); if ($via.Length -gt 24) { $via = $via.Substring(0, 24) }
+                $src = ([string]$mj.from) -replace '[^0-9A-Fa-f.]', '_'
+                $base = '{0}-{1}-from{2}-via{3}-c{4}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), (Get-Random -Maximum 99999), $src, $via, $s.copies
+                $jid = Sp-Rand 8; $caps = Get-Caps $c.printer
+                $job = @{ name = ([string]$mj.name -replace '[\x00-\x1f]', ''); copies = $s.copies; pages = $s.pages; paper = $s.paper; orientation = $s.orientation; color = $s.color
+                          duplex = $s.duplex; margins = $s.margins; scale = $s.scale; nup = $s.nup; hm = $caps.hm; via = 'station'; jid = $jid; sheets = $s.sheets }
+                $ahead = (Waiting) + (Spool-Count $c)
+                Sp-JobSet $jid @{ state = 'queued'; station = (Sp-StationName $c); sid = (Sp-NodeId); sheets = $s.sheets; ahead = $ahead }
+                Add-Job $tmp ".$ext" $base $job $null $false
+                Json $res 200 @{ ok = $true; jid = $jid; ahead = $ahead }; continue
+            }
+            if ($m -eq 'GET' -and $path -match '^/sync/job/([0-9a-f]{16})$') {
+                $j = Sp-JobGet $Matches[1]
+                if ($j) { Json $res 200 @{ state = [string]$j.state; ahead = [int]$j.ahead; err = [string]$j.err } } else { Json $res 404 @{ error = 'GONE' } }
+                continue
+            }
+            if ($m -eq 'POST' -and $path -eq '/sync/convert') {
+                $c = Get-Cfg; $ext = ([string]$req.Headers['X-Ext']).ToLower()
+                if ($c.conv -eq '0' -or (Sp-LocalOffice) -notin 'office', 'lo') { Json $res 503 @{ error = 'NO_CONVERTER' }; continue }
+                if ($ext -notin $OfficeTypes) { Json $res 415 @{ error = "This type of file can't be printed." }; continue }
+                $rid = Sp-Rand 16; $f = Join-Path $up "$rid.$ext"
+                if (-not (Save-Body $req $f)) { Json $res 413 @{ error = 'File is bigger than 50 MB.' }; continue }
+                if (-not (Test-Magic $f $ext)) { Remove-Item $f -Force; Json $res 415 @{ error = "This type of file can't be printed." }; continue }
+                [IO.File]::WriteAllText((Join-Path $up "$rid.todo"), $ext)
+                Json $res 200 @{ rid = $rid }; continue
+            }
+            if ($m -eq 'GET' -and $path -match '^/sync/converted/([0-9a-f]{32})$') {
+                $rid = $Matches[1]; $pdf = Join-Path $up "$rid.pdf"
+                if (Test-Path $pdf) { $d = [IO.File]::ReadAllBytes($pdf); Get-ChildItem $up -Filter "$rid.*" | Remove-Item -Force -EA SilentlyContinue; Send $res 200 'application/pdf' $d }
+                elseif (Test-Path (Join-Path $up "$rid.fail")) { Get-ChildItem $up -Filter "$rid.*" | Remove-Item -Force -EA SilentlyContinue; Json $res 410 @{ error = 'FAILED' } }
+                elseif (@(Get-ChildItem $up -Filter "$rid.*" -EA SilentlyContinue).Count) { Json $res 202 @{ state = 'converting' } }
+                else { Json $res 404 @{ error = 'GONE' } }
+                continue
+            }
+            if ($m -eq 'POST' -and $path -eq '/sync/scan') {
+                $q = $null; try { $q = (Read-Body $req) | ConvertFrom-Json } catch {}
+                $n = Sp-ScanNorm $q (Sp-Scanners); if (-not $n.q) { Json $res 404 @{ error = $n.err }; continue }
+                $sid = Sp-Rand 8; Sp-ScanSet $sid @{ state = 'waiting'; target = (Sp-NodeId); q = $n.q }
+                Json $res 200 @{ sid = $sid }; continue
+            }
+            if ($m -eq 'GET' -and $path -match '^/sync/scan/([0-9a-f]{16})(/file)?$') {
+                $sid = $Matches[1]; $file = $Matches[2]; $j = Sp-ScanGet $sid
+                if (-not $j) { Json $res 404 @{ error = 'GONE' }; continue }
+                if (-not $file) { Json $res 200 @{ state = [string]$j.state; err = [string]$j.err; ext = [string]$j.ext; pages = [int]$j.pages }; continue }
+                $f = Join-Path $SpScans "$sid.$($j.ext)"
+                if (-not (Test-Path $f)) { Json $res 404 @{ error = 'GONE' }; continue }
+                $d = [IO.File]::ReadAllBytes($f); Remove-Item $f, (Join-Path $SpScans "$sid.json") -Force -EA SilentlyContinue
+                Send $res 200 'application/octet-stream' $d; continue
+            }
+            Json $res 404 @{ error = 'Not found' }; continue
+        }
+        if ($m -eq 'GET' -and $path -eq '/stations') {    # public: the stations a person can pick on the print page
+            $c = Get-Cfg; $me = Sp-Self
+            $l = @([ordered]@{ id = (Sp-NodeId); station = (Sp-StationName $c); printer = $c.printer; here = $true; online = $true; ready = [bool]$me.ready; url = (Sp-MyUrl)
+                               queue = [int]$me.queue; jobs = [int]$me.jobs; color = [bool]$me.color; duplex = [bool]$me.duplex })
+            if (Sp-Group) {
+                foreach ($x in @(Sp-Stations | Where-Object { $_.s.hasPrinter -ne $false } | Sort-Object station)) {
+                    $l += [ordered]@{ id = $x.id; station = $x.station; printer = [string]$x.s.printer; here = $false; online = [bool]$x.online
+                                      ready = [bool]($x.online -and $x.s.ready -and $x.s.accept); queue = [int]$x.s.queue; jobs = [int]$x.s.jobs; color = [bool]$x.s.color; duplex = [bool]$x.s.duplex; url = $x.url }
+                }
+            }
+            Json $res 200 ([ordered]@{ here = (Sp-NodeId); auto = [bool]((Sp-Group) -and $c.share -ne '0'); list = $l }); continue
+        }
+        if ($m -eq 'GET' -and $path -match '^/job/([0-9a-f]{16})$') {    # public: the print page follows its job
+            $j = Sp-JobGet $Matches[1]
+            if ($j) { Json $res 200 @{ state = [string]$j.state; station = [string]$j.station; ahead = [int]$j.ahead; moved = [bool]$j.moved; why = [string]$j.why; err = [string]$j.err } } else { Json $res 200 @{ state = 'gone' } }
+            continue
+        }
+        if ($m -eq 'GET' -and $path -eq '/scanners') { Json $res 200 @{ list = @(Sp-ScannersAll) }; continue }
+        if ($m -eq 'POST' -and $path -eq '/scan') {
+            $c = Get-Cfg
+            if ($c.open -eq '0') { Json $res 503 @{ error = 'Printing is closed right now.' }; continue }
+            if ($c.pin -and $req.Headers['X-Pin'] -ne $c.pin) { Json $res 403 @{ error = 'Wrong PIN.' }; continue }
+            $q = $null; try { $q = (Read-Body $req) | ConvertFrom-Json } catch {}
+            $all = @(Sp-ScannersAll | Where-Object { $_.station -eq [string]$q.station })
+            $n = Sp-ScanNorm $q $all; if (-not $n.q) { Json $res 404 @{ error = $n.err }; continue }
+            $dev = $all | Where-Object { $_.id -eq $n.q.device } | Select-Object -First 1
+            $sid = Sp-Rand 8; Sp-ScanSet $sid @{ state = 'waiting'; target = [string]$q.station; q = $n.q; station = [string]$dev.stationName; name = [string]$dev.name }
+            Json $res 200 @{ sid = $sid; station = [string]$dev.stationName }; continue
+        }
+        if ($m -eq 'GET' -and $path -match '^/scan/([0-9a-f]{16})(/file)?$') {
+            $sid = $Matches[1]; $file = $Matches[2]; $j = Sp-ScanGet $sid
+            if (-not $j) { Json $res 200 @{ state = 'gone' }; continue }
+            if (-not $file) { Json $res 200 @{ state = [string]$j.state; err = [string]$j.err; ext = [string]$j.ext; size = [int]$j.size; pages = [int]$j.pages; station = [string]$j.station }; continue }
+            $f = Join-Path $SpScans "$sid.$($j.ext)"
+            if ($j.state -ne 'ready' -or -not (Test-Path $f)) { Json $res 404 @{ error = 'GONE' }; continue }
+            $res.Headers.Add('Content-Disposition', "attachment; filename=`"scan-$(Get-Date -Format 'yyyyMMdd-HHmmss').$($j.ext)`"")
+            SendFile $res $f $false; continue
         }
 
         # ------------------------------------------------ admin (this PC only)
@@ -197,6 +316,7 @@ while ($listener.IsListening) {
             $body = Read-Body $req
             $j = $null; if ($body) { $j = $body | ConvertFrom-Json }
             $c = Get-Cfg
+            if ($path -eq '/admin/scan') { [IO.File]::WriteAllText((Join-Path $SpSync 'scan-now'), ''); Json $res 200 @{ ok = $true }; continue }
             if ($path -eq '/admin/set') {
                 if ($null -ne $j.open) { $c.open = if ($j.open) { '1' } else { '0' } }
                 if ($null -ne $j.lang) { if ($j.lang -notin 'fa', 'en') { Json $res 400 @{ error = 'Unknown language.' }; continue }; $c.lang = $j.lang }
@@ -205,15 +325,36 @@ while ($listener.IsListening) {
                     $c.pin = $j.pin
                 }
                 if ($null -ne $j.printer) {
-                    if (-not (Get-Printer -Name $j.printer -EA SilentlyContinue)) { Json $res 400 @{ error = 'That printer does not exist.' }; continue }
+                    $p = Get-Printer -Name $j.printer -EA SilentlyContinue
+                    if ($p -and (Sp-IsOwnQueue $p)) { Json $res 400 @{ error = 'SELF_QUEUE' }; continue }
+                    if (-not $p) { Json $res 400 @{ error = 'That printer does not exist.' }; continue }
                     $c.printer = $j.printer
                 }
-                Save-Cfg $c; Json $res 200 @{ ok = $true }
+                if ($null -ne $j.station) {
+                    $st = ([string]$j.station -replace '[\x00-\x1f<>"\\]', '').Trim(); if ($st.Length -gt 40) { $st = $st.Substring(0, 40) }
+                    if (-not $st) { Json $res 400 @{ error = 'STATION_EMPTY' }; continue }
+                    $c.station = $st
+                }
+                foreach ($k in 'share', 'accept', 'conv', 'dns') { if ($null -ne $j.$k) { $c[$k] = if ($j.$k) { '1' } else { '0' } } }
+                if ($null -ne $j.domain) {
+                    $d = ([string]$j.domain).Trim().ToLower() -replace '^https?://', '' -replace '/.*$', ''
+                    if ($d -and $d -notmatch '^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$') { Json $res 400 @{ error = 'DOMAIN_FORMAT' }; continue }
+                    $c.domain = $d; $c.domainAt = [string](Sp-Now)
+                }
+                if ($null -ne $j.password) {
+                    $pw = [string]$j.password
+                    if ($pw -and $pw.Length -lt 8) { Json $res 400 @{ error = 'PW_SHORT' }; continue }
+                    Remove-Item (Join-Path $SpSync 'peers.json') -Force -EA SilentlyContinue
+                    Get-ChildItem $SpSt -File -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
+                    if ($pw) { Sp-Write (Join-Path $SpSync 'group.json') (Sp-Derive $pw); [IO.File]::WriteAllText((Join-Path $SpSync 'scan-now'), '') }
+                    else { Remove-Item (Join-Path $SpSync 'group.json') -Force -EA SilentlyContinue }
+                }
+                Sp-SaveCfg $c; Json $res 200 @{ ok = $true }
             }
             elseif ($path -eq '/admin/clear') {
                 $n = @(Get-ChildItem $inbox -File -EA SilentlyContinue).Count
                 Get-ChildItem $inbox -File -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
-                $pj = @(Get-PrintJob -PrinterName $c.printer -EA SilentlyContinue)
+                $pj = @(if ($c.printer) { Get-PrintJob -PrinterName $c.printer -EA SilentlyContinue })
                 $pj | Remove-PrintJob -EA SilentlyContinue
                 Json $res 200 @{ removed = ($n + $pj.Count) }
             }
@@ -228,12 +369,16 @@ while ($listener.IsListening) {
         }
 
         # ------------------------------------------------ everyone
-        if ($m -eq 'GET' -and $path -eq '/') { Send $res 200 'text/html; charset=utf-8' $pages.print; continue }
+        if ($m -eq 'GET' -and $path -eq '/') {    # one address for everyone: other stations send people to the main station
+            $l = Sp-Leader
+            if ($l.id -ne (Sp-NodeId) -and $req.Url.Query -notmatch 'here' -and (Sp-Stations | Where-Object { $_.id -eq $l.id -and $_.online })) { Redirect $res "$($l.url)/"; continue }
+            Send $res 200 'text/html; charset=utf-8' $pages.print; continue
+        }
 
         if ($m -eq 'GET' -and $path -eq '/status') {
             $c = Get-Cfg; $office = Get-Office
-            Json $res 200 @{ waiting = (Waiting); pin = [bool]$c.pin; open = ($c.open -ne '0'); printer = $c.printer; lang = $c.lang
-                             office = $office; types = @(Get-Types $office); caps = (Get-Caps $c.printer) }
+            Json $res 200 @{ waiting = (Waiting); pin = [bool]$c.pin; open = ($c.open -ne '0'); printer = $c.printer; lang = $c.lang; station = (Sp-StationName $c)
+                             office = $office; types = @(Get-Types $office); caps = (Net-Caps $c); scan = [bool]@(Sp-ScannersAll).Count; hasPrinter = [bool]$c.printer }
             continue
         }
 
@@ -248,14 +393,7 @@ while ($listener.IsListening) {
             $ext = ''; if ($name -match '\.([A-Za-z0-9]{1,5})$') { $ext = $Matches[1].ToLower() }
             $id = [guid]::NewGuid().ToString('N')
             $tmp = Join-Path $up "$id.part"
-            $fs = [IO.File]::Create($tmp); $buf = New-Object byte[] 65536; $total = 0; $tooBig = $false
-            while (($n = $req.InputStream.Read($buf, 0, $buf.Length)) -gt 0) {
-                $total += $n
-                if ($total -gt $maxMB * 1MB) { $tooBig = $true; break }
-                $fs.Write($buf, 0, $n)
-            }
-            $fs.Close()
-            if ($tooBig) { Remove-Item $tmp -Force; Json $res 413 @{ error = 'File is bigger than 50 MB.' }; continue }
+            if (-not (Save-Body $req $tmp)) { Json $res 413 @{ error = 'File is bigger than 50 MB.' }; continue }
             if (-not $ext) { $ext = Sniff $tmp }
             if ($ext -eq 'jpeg') { $ext = 'jpg' }; if ($ext -eq 'tiff') { $ext = 'tif' }
             $office = Get-Office
@@ -271,7 +409,11 @@ while ($listener.IsListening) {
                 Remove-Item $tmp -Force
             }
             elseif ($ext -eq 'pdf') { Move-Item $tmp (Join-Path $up $src) }
-            else { Move-Item $tmp (Join-Path $up $src); [IO.File]::WriteAllText((Join-Path $up "$id.todo"), $ext); $state = 'converting' }
+            else {    # Word/Excel/PowerPoint/text: here (convert.ps1), or on the station with the most free power (syncd.ps1)
+                Move-Item $tmp (Join-Path $up $src); $state = 'converting'
+                $x = Sp-PickConverter $c
+                if ($x) { [IO.File]::WriteAllText((Join-Path $up "$id.remote"), "$($x.id) $ext") } else { [IO.File]::WriteAllText((Join-Path $up "$id.todo"), $ext) }
+            }
             $from = $req.RemoteEndPoint.Address.ToString() -replace '[^0-9A-Fa-f.]', '_'
             $meta = @{ name = $name; ext = $ext; kind = $kind; src = $src; from = $from; created = (Get-Date).ToString('o') }
             [IO.File]::WriteAllText((Join-Path $up "$id.meta"), (ConvertTo-Json -Compress $meta), [Text.Encoding]::UTF8)
@@ -302,28 +444,27 @@ while ($listener.IsListening) {
             $id = if ($j) { [string]$j.id } else { '' }
             $meta = Read-Meta $id
             if (-not $meta -or (Get-State $id $meta) -ne 'ready') { Json $res 410 @{ error = 'GONE' }; continue }
+            $s = Norm-Job $j (Net-Caps $c); if (-not $s) { Json $res 400 @{ error = 'Bad settings.' }; continue }
+            $want = [string]$j.target; if ($want -notmatch '^(auto|[0-9a-f]{32})$') { $want = 'auto' }
+            $pick = Sp-PickStation $want @{ color = ($s.color -eq 'color'); duplex = ($s.duplex -ne 'off'); pw = $s.pw; ph = $s.ph } $c
+            if ($pick.err) { Json $res 409 @{ error = $pick.err }; continue }
             $caps = Get-Caps $c.printer
-            $copies = 1; [void][int]::TryParse([string]$j.copies, [ref]$copies); $copies = [Math]::Min([Math]::Max($copies, 1), 20)
-            $nup = 1; [void][int]::TryParse([string]$j.nup, [ref]$nup)
-            $okSet = $true
-            foreach ($k in $sets.Keys) { if ([string]$j.$k -notin $sets[$k]) { $okSet = $false } }
-            if ($nup -notin 1, 2, 4 -or [string]$j.pages -notmatch '^[0-9,\-\s]{0,200}$') { $okSet = $false }
-            if (-not $okSet) { Json $res 400 @{ error = 'Bad settings.' }; continue }
-            $paper = [string]$j.paper; if (-not ($caps.papers | Where-Object { $_.n -eq $paper })) { $paper = $caps.def }
-            $color = if ($caps.color) { [string]$j.color } else { 'gray' }
-            $duplex = if ($caps.duplex) { [string]$j.duplex } else { 'off' }
-
+            if (-not $pick.x) { if (-not $caps.color) { $s.color = 'gray' }; if (-not $caps.duplex) { $s.duplex = 'off' } }    # printing here after all
             $stamp = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), (Get-Random -Maximum 99999)
             $srcFile = if ($meta.kind -eq 'image') { Join-Path $up $meta.src } else { Join-Path $up "$id.pdf" }
             $ext = [IO.Path]::GetExtension($srcFile)
-            $base = "$stamp-from$($meta.from)-c$copies"
-            Move-Item $srcFile (Join-Path $inbox "$base$ext")
-            $job = @{ file = "$base$ext"; name = $meta.name; copies = $copies; pages = [string]$j.pages; paper = $paper; orientation = [string]$j.orientation
-                      color = $color; duplex = $duplex; margins = [string]$j.margins; scale = [string]$j.scale; nup = $nup; hm = $caps.hm }
-            [IO.File]::WriteAllText((Join-Path $inbox "$base.tmp"), (ConvertTo-Json -Compress $job), [Text.Encoding]::UTF8)
-            Move-Item (Join-Path $inbox "$base.tmp") (Join-Path $inbox "$base.json")
+            $base = "$stamp-from$($meta.from)-c$($s.copies)"
+            $jid = Sp-Rand 8; $here = Sp-StationName $c
+            $job = @{ name = $meta.name; copies = $s.copies; pages = $s.pages; paper = $s.paper; orientation = $s.orientation; color = $s.color; duplex = $s.duplex
+                      margins = $s.margins; scale = $s.scale; nup = $s.nup; hm = $caps.hm; jid = $jid; sheets = $s.sheets; pw = $s.pw; ph = $s.ph; land = $s.land; from = $meta.from }
+            $ahead = if ($pick.x) { [int]$pick.x.s.jobs } else { (Waiting) + (Spool-Count $c) }
+            Sp-JobSet $jid @{ state = $(if ($pick.x) { 'sending' } else { 'queued' }); station = $(if ($pick.x) { $pick.x.station } else { $here }); sid = $(if ($pick.x) { $pick.x.id } else { (Sp-NodeId) })
+                              sheets = $s.sheets; ahead = $ahead }
+            Sp-Hold $jid $srcFile $ext $job
+            Sp-JobSet $jid @{ picked = ($want -ne 'auto') }
+            Add-Job $srcFile $ext $base $job $pick.x ($want -ne 'auto')
             Get-ChildItem $up -File -Filter "$id.*" -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
-            Json $res 200 @{ ok = $true; waiting = (Waiting) }
+            Json $res 200 @{ ok = $true; jid = $jid; station = $(if ($pick.x) { $pick.x.station } else { $here }); here = (-not $pick.x); waiting = (Waiting) }
             continue
         }
 

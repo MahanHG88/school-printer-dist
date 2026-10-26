@@ -25,7 +25,7 @@
     var s = st0; if (!s) return;
     $('dot').className = 'dot ' + (!s.open ? 'err' : s.waiting ? 'warn' : 'ok');
     $('qt').textContent = !s.open ? L('closed') : s.waiting ? L('waitingN', { n: s.waiting }) : L('ready');
-    var office = s.office === 'office' || s.office === 'lo';
+    var office = s.office === 'office' || s.office === 'lo' || s.office === 'peer';    // peer: another station converts
     $('typesTxt').textContent = office ? L('typesAll') : L('typesBasic');
     $('officeNote').hidden = office;
     $('officeNote').textContent = s.office === 'signin' ? L('officeSignin') : L('officeNone');
@@ -42,7 +42,7 @@
       return '<option value="' + esc(p.n) + '"' + (p.n === S.paper ? ' selected' : '') + '>' + esc(p.n) + ' · ' + Math.round(p.w) + '×' + Math.round(p.h) + ' mm</option>';
     }).join('');
     var colorBtn = document.querySelector('[data-k=color] [data-v=color]');
-    colorBtn.disabled = !c.color; $('monoHint').hidden = !!c.color; if (!c.color) S.color = 'gray';
+    colorBtn.disabled = !c.color; $('monoHint').hidden = !!c.color; if (!c.color) S.color = 'gray';    // c.color: any connected printer
     $('duplexRow').hidden = !c.duplex; if (!c.duplex) S.duplex = 'off';
     syncSeg(); schedule();
   }
@@ -50,8 +50,28 @@
     fetch('/status').then(function (r) { return r.json(); }).then(function (s) {
       st0 = s; serverLang(s.lang); $('pname').textContent = s.printer || ''; $('pinbox').hidden = !s.pin;
       if (s.caps) applyCaps(s.caps); paint(); renderList();
-    }).catch(function () { st0 = null; $('dot').className = 'dot err'; $('qt').textContent = L('offline'); });
+      fails = 0; if (s.station) try { localStorage.setItem('sp-here', location.origin); } catch (e) {}
+    }).catch(function () { st0 = null; $('dot').className = 'dot err'; $('qt').textContent = L('offline'); if (++fails >= 2) failover(); });
   }
+  /* this station stopped answering (switched off, unplugged): go to another one - it sends people on to the new main station */
+  var fails = 0, others = [], hopping = false;
+  function rememberStations() { fetch('/stations').then(function (r) { return r.json(); }).then(function (j) {
+    others = (j.list || []).filter(function (x) { return x.url && x.online && x.url !== location.origin; }).map(function (x) { return x.url; });
+    try { localStorage.setItem('sp-others', JSON.stringify(others)); } catch (e) {} }).catch(function () {}); }
+  function failover() {
+    if (hopping || busy || scBusy) return; var list = others.slice();
+    try { list = list.concat(JSON.parse(localStorage.getItem('sp-others') || '[]')); } catch (e) {}
+    list = list.filter(function (u, i) { return u && u !== location.origin && list.indexOf(u) === i; }); if (!list.length) return;
+    hopping = true; $('qt').textContent = L('hopping');
+    (function next(i) {
+      if (i >= list.length) { hopping = false; return; }
+      var ctl = window.AbortController ? new AbortController() : null, t = setTimeout(function () { if (ctl) ctl.abort(); }, 2500);
+      fetch(list[i] + '/status', { mode: 'no-cors', cache: 'no-store', signal: ctl ? ctl.signal : undefined })
+        .then(function () { clearTimeout(t); location.href = list[i] + '/?moved=1'; })
+        .catch(function () { clearTimeout(t); next(i + 1); });
+    })(0);
+  }
+  rememberStations(); setInterval(rememberStations, 30000);
 
   /* ---------------- settings controls ---------------- */
   function syncSeg() {
@@ -253,26 +273,174 @@
     return { copies: +$('c').value || 1, pages: S.pmode === 'custom' ? S.range.trim() : '', paper: S.paper, orientation: S.orientation,
       color: S.color, duplex: S.duplex, margins: S.margins, scale: S.scale, nup: +S.nup };
   }
+  function sheetsOf(f, cfg) { var Lo = layout(f.pages); if (Lo.error) return 1; return (cfg.duplex !== 'off' ? Math.ceil(Lo.sheets.length / 2) : Lo.sheets.length) * (cfg.copies || 1); }
+  var pm = { mode: 'auto', todo: [], list: [], pick: '' };
+  try { pm.mode = localStorage.getItem('sp-mode') || 'auto'; pm.pick = localStorage.getItem('sp-station') || ''; } catch (e) {}
   $('go').onclick = function () {
     var todo = files.filter(function (f) { return f.state === 'ready'; });
     for (var t = 0; t < todo.length; t++) { var Lo = layout(todo[t].pages); if (Lo.error) { sel = files.indexOf(todo[t]); renderList(); schedule(); say(todo[t].name + ': ' + Lo.error, 'err'); return; } }
-    busy = true; renderList(); $('bar').hidden = false; $('bi').style.width = '0';
-    var p = pin(), done = 0, cfg = settingsFor();
+    if (!todo.length) return;
+    say(''); pm.todo = todo; $('pmchoose').hidden = false; $('pmrun').hidden = true; $('pm').hidden = false;
+    var cfg = settingsFor(), sh = 0; todo.forEach(function (f) { sh += sheetsOf(f, cfg); });
+    $('pmsum').textContent = (todo.length === 1 ? L('pmSum1', { s: sh }) : L('pmSumN', { n: todo.length, s: sh })) + ' · ' + (cfg.color === 'color' ? L('colorC') : L('colorBW')) + ' · ' + cfg.paper;
+    renderPm(); loadStations();
+  };
+  function loadStations() { fetch('/stations').then(function (r) { return r.json(); }).then(function (j) { pm.list = j.list || []; pm.auto = j.auto; renderPm(); }).catch(function () { pm.list = []; renderPm(); }); }
+  function fits(x, cfg) { return (cfg.color !== 'color' || x.color) && (cfg.duplex === 'off' || x.duplex); }
+  function stLabel(x, cfg) {
+    var st = !x.online ? L('pmOff') : !x.ready ? L('pmBusy') : x.queue ? L('pmQn', { n: x.queue }) : L('pmQ0');
+    return x.station + (x.here ? ' (' + L('pmHere') + ')' : '') + ' — ' + (x.printer || '?') + ' · ' + st + (cfg.color === 'color' && !x.color ? ' · ' + L('pmBW') : '');
+  }
+  function bestAuto(cfg) {
+    var ready = pm.list.filter(function (x) { return x.ready && (x.here || pm.auto); }); if (!ready.length) return null;
+    var fit = ready.filter(function (x) { return fits(x, cfg); }); if (!fit.length) fit = ready;
+    return fit.reduce(function (b, x) { return x.queue < b.queue ? x : b; }, fit[0]);
+  }
+  function renderPm() {
+    var cfg = settingsFor(), multi = pm.list.length > 1;
+    if (!multi) pm.mode = 'auto';
+    [].forEach.call(document.querySelectorAll('.opt'), function (b) { b.setAttribute('aria-checked', String(b.getAttribute('data-mode') === pm.mode)); b.disabled = !multi && b.getAttribute('data-mode') === 'pick'; });
+    $('pmone').hidden = multi || !pm.list.length; $('pmpick').hidden = pm.mode !== 'pick';
+    var b = bestAuto(cfg); $('pmnow').textContent = b && multi ? L('pmNow', { s: b.station + ' · ' + (b.queue ? L('pmQn', { n: b.queue }) : L('pmQ0')) }) : '';
+    if (document.activeElement !== $('pmsel')) {
+      var ok = pm.list.filter(function (x) { return x.ready; });
+      if (!ok.some(function (x) { return x.id === pm.pick; })) { var f = ok.filter(function (x) { return fits(x, cfg); })[0] || ok[0]; pm.pick = f ? f.id : ''; }
+      $('pmsel').innerHTML = pm.list.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.ready ? '' : ' disabled') + (x.id === pm.pick ? ' selected' : '') + '>' + esc(stLabel(x, cfg)) + '</option>'; }).join('');
+    }
+    var cur = pm.list.filter(function (x) { return x.id === pm.pick; })[0];
+    $('pmhint').textContent = cur && cfg.color === 'color' && !cur.color ? L('pmBW') : '';
+    var miss = pm.mode === 'pick' && !cur ? L('pmChoose') : '';
+    $('pmmiss').textContent = miss; $('pmgo').disabled = !!miss;
+  }
+  [].forEach.call(document.querySelectorAll('.opt'), function (b) { b.onclick = function () { pm.mode = b.getAttribute('data-mode'); try { localStorage.setItem('sp-mode', pm.mode); } catch (e) {} renderPm(); if (pm.mode === 'pick') $('pmsel').focus(); }; });
+  $('pmsel').onchange = function () { pm.pick = this.value; try { localStorage.setItem('sp-station', pm.pick); } catch (e) {} renderPm(); };
+  function closePm() { if (!busy) $('pm').hidden = true; }
+  $('pmclose').onclick = closePm; $('pm').onclick = function (e) { if (e.target === this) closePm(); };
+  $('pmok').onclick = function () { $('pm').hidden = true; };
+
+  function stage(c) { $('pmstage').className = 'stage' + (c ? ' ' + c : ''); }
+  function finish(ok, title, detail) {
+    busy = false; stage(ok ? 'done' : 'fail'); $('pmstate').textContent = title; $('pmdetail').innerHTML = detail || ''; $('pmok').hidden = false; $('pmok').focus();
+    renderList(); schedule(); status();
+  }
+  $('pmgo').onclick = function () {
+    var todo = pm.todo.slice(), cfg = settingsFor(), p = pin(), target = pm.mode === 'pick' ? pm.pick : 'auto', sent = [];
+    busy = true; renderList(); $('pmchoose').hidden = true; $('pmrun').hidden = false; $('pmok').hidden = true; stage('');
+    $('pmstate').textContent = L('pmSending'); $('pmdetail').textContent = ''; $('pmlist').innerHTML = '';
     (function next() {
-      if (!todo.length) { busy = false; $('bar').hidden = true; renderList(); schedule(); say(L('sent', { n: done }), 'ok'); status(); return; }
-      var f = todo.shift(); say(L('sending', { f: f.name }));
-      var body = JSON.parse(JSON.stringify(cfg)); body.id = f.id; body.land = layout(f.pages).land;   // what 'Auto' resolved to (used by the Mac/Linux version)
+      if (!todo.length) return follow(sent);
+      var f = todo.shift(), body = JSON.parse(JSON.stringify(cfg));
+      body.id = f.id; body.land = layout(f.pages).land; body.sheets = sheetsOf(f, cfg); body.target = target;
       fetch('/print', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Pin': p }, body: JSON.stringify(body) })
         .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
         .then(function (r) {
-          if (!r.ok) { busy = false; $('bar').hidden = true; renderList(); say(f.name + ': ' + E(r.j.error), 'err'); return; }
-          done++; $('bi').style.width = (done / (done + todo.length) * 100) + '%';
+          if (!r.ok) { if (!sent.length) { loadStations(); } return finish(false, L('pmFailH'), esc(f.name + ': ' + E(r.j.error))); }
+          sent.push({ f: f, jid: r.j.jid, station: r.j.station || '', first: r.j.station || '', state: r.j.jid ? 'sending' : 'done', ahead: 0 });
           var i = files.indexOf(f); if (i >= 0) { files.splice(i, 1); if (sel >= files.length) sel = files.length - 1; }
           next();
-        }).catch(function () { busy = false; $('bar').hidden = true; renderList(); say(L('noReach'), 'err'); });
+        }).catch(function () { finish(false, L('pmFailH'), esc(L('noReach'))); });
     })();
   };
+  var WHY = { STATION_LOST: 'pmMovedLost', PRINTER_ERROR: 'pmMovedJam', NOT_TAKEN: 'pmMoved' };
+  var FAILS = { STATION_LOST: 'pmFailLost', PRINTER_ERROR: 'pmFailJam', NOT_TAKEN: 'pmFailNone', FAILED: 'pmFailNone' };
+  function follow(sent) {
+    var t0 = Date.now();
+    function list() {
+      $('pmlist').innerHTML = sent.length < 2 ? '' : sent.map(function (x) {
+        return '<li><b>' + esc(x.f.name) + '</b><span>' + esc(x.station) + '</span></li>'; }).join('');
+    }
+    (function tick() {
+      var open = sent.filter(function (x) { return x.jid && x.state !== 'printing' && x.state !== 'done' && x.state !== 'failed' && x.state !== 'gone'; });
+      var bad = sent.filter(function (x) { return x.state === 'failed'; });
+      list();
+      if (bad.length) return finish(false, L('pmFailH'), esc(bad[0].f.name + ': ' + (FAILS[bad[0].err] ? L(FAILS[bad[0].err]) : bad[0].err || L('error'))));
+      if (!open.length) {
+        var names = sent.map(function (x) { return x.station; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+        var d = names.length === 1 ? L('pmPickup', { s: '<b class="pickup">' + esc(names[0]) + '</b>' }) : names.length ? L('pmPickupN') : '';
+        var moved = sent.filter(function (x) { return x.moved; })[0];
+        if (moved) d += '<br><span class="sm">' + esc(L(WHY[moved.why] || 'pmMoved', { a: moved.first, b: moved.station })) + '</span>';
+        var ahead = Math.max.apply(null, sent.map(function (x) { return x.ahead || 0; })); if (ahead) d += '<br><span class="sm">' + esc(L('pmAhead', { n: ahead })) + '</span>';
+        return finish(true, L('pmDoneH'), d);
+      }
+      var w = open[0]; $('pmstate').textContent = w.state === 'queued' ? L('pmWaiting', { s: w.station }) : L('pmSending');
+      $('pmdetail').textContent = w.ahead ? L('pmAhead', { n: w.ahead }) : '';
+      if (Date.now() - t0 > 600000) return finish(true, L('pmDoneH'), esc(L('pmWaiting', { s: w.station })));
+      Promise.all(open.map(function (x) {
+        return fetch('/job/' + x.jid).then(function (r) { return r.json(); }).then(function (j) {
+          x.state = j.state; x.ahead = j.ahead || 0; x.err = j.err || ''; if (j.station) x.station = j.station; x.moved = j.moved; x.why = j.why || '';
+        }).catch(function () {});
+      })).then(function () { setTimeout(tick, 1100); });
+    })();
+  }
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closePm(); });
 
+
+  /* ---------------- scan ---------------- */
+  var SC = { list: [], dev: '', dpi: 300, mode: 'color', src: 'flatbed', fmt: 'pdf' };
+  try { var sv = JSON.parse(localStorage.getItem('sp-scan') || '{}'); for (var k in sv) if (k in SC && k !== 'list') SC[k] = sv[k]; } catch (e) {}
+  function scSave() { var o = {}; ['dev', 'dpi', 'mode', 'src', 'fmt'].forEach(function (k) { o[k] = SC[k]; }); try { localStorage.setItem('sp-scan', JSON.stringify(o)); } catch (e) {} }
+  function scKey(x) { return x.station + '|' + x.id; }
+  function scCur() { return SC.list.filter(function (x) { return scKey(x) === SC.dev; })[0]; }
+  function scSeg(id, val, allowed) {
+    [].forEach.call($(id).querySelectorAll('button'), function (b) { var v = b.getAttribute('data-v'); b.disabled = allowed && allowed.indexOf(v) < 0; b.setAttribute('aria-pressed', String(v === val)); });
+  }
+  function scRender() {
+    var d = scCur(); if (!d && SC.list.length) { d = SC.list[0]; SC.dev = scKey(d); }
+    if (document.activeElement !== $('smdev')) $('smdev').innerHTML = SC.list.map(function (x) {
+      return '<option value="' + esc(scKey(x)) + '"' + (scKey(x) === SC.dev ? ' selected' : '') + '>' + esc(x.stationName + ' — ' + x.name) + '</option>'; }).join('') || '<option value="">' + esc(L('scanNone')) + '</option>';
+    var dpis = d ? d.dpis.map(Number) : [];
+    if (d && dpis.indexOf(+SC.dpi) < 0) SC.dpi = dpis.indexOf(300) >= 0 ? 300 : dpis[Math.floor(dpis.length / 2)];
+    $('smdpi').innerHTML = dpis.map(function (n) { return '<option value="' + n + '"' + (n === +SC.dpi ? ' selected' : '') + '>' + n + ' dpi' + (n <= 150 ? ' · ' + L('scanFast') : n >= 600 ? ' · ' + L('scanFine') : '') + '</option>'; }).join('');
+    if (d && d.modes.indexOf(SC.mode) < 0) SC.mode = d.modes[0];
+    var srcs = d ? d.sources : ['flatbed']; if (srcs.indexOf(SC.src) < 0) SC.src = srcs[0];
+    $('smsrcrow').hidden = srcs.length < 2;
+    if (SC.src === 'feeder') SC.fmt = 'pdf';
+    scSeg('smmode', SC.mode, d && d.modes); scSeg('smsrc', SC.src, srcs); scSeg('smfmt', SC.fmt, SC.src === 'feeder' ? ['pdf'] : null);
+    $('smhint').textContent = SC.src === 'feeder' ? L('scanFeedHint') : SC.fmt !== 'pdf' ? L('scanImgHint') : '';
+    var miss = !d ? L('scanMissDev') : ''; $('smmiss').textContent = miss; $('smgo').disabled = !!miss;
+  }
+  function scLoad() { return fetch('/scanners').then(function (r) { return r.json(); }).then(function (j) { SC.list = j.list || []; $('scanbtn').hidden = !SC.list.length; if (!$('sm').hidden) scRender(); }).catch(function () {}); }
+  $('scanbtn').onclick = function () { $('smform').hidden = false; $('smrun').hidden = true; $('sm').hidden = false; scRender(); scLoad(); };
+  $('smdev').onchange = function () { SC.dev = this.value; scSave(); scRender(); };
+  $('smdpi').onchange = function () { SC.dpi = +this.value; scSave(); };
+  [['smmode', 'mode'], ['smsrc', 'src'], ['smfmt', 'fmt']].forEach(function (g) {
+    $(g[0]).addEventListener('click', function (e) { var b = e.target.closest('button'); if (!b || b.disabled) return; SC[g[1]] = b.getAttribute('data-v'); scSave(); scRender(); });
+  });
+  var scBusy = false;
+  function scClose() { if (!scBusy) $('sm').hidden = true; }
+  $('smclose').onclick = scClose; $('sm').onclick = function (e) { if (e.target === this) scClose(); }; $('smok').onclick = scClose;
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') scClose(); });
+  $('smagain').onclick = function () { $('smform').hidden = false; $('smrun').hidden = true; scRender(); };
+  function scStage(c) { $('smstage').className = 'stage scanstage' + (c ? ' ' + c : ''); }
+  var SCERR = { NO_SCANNER: 'scanENo', STATION_OFFLINE: 'eStationOff', STATION_LOST: 'scanELost', FEEDER_EMPTY: 'scanEFeed', SCAN_FAILED: 'scanEFail', BUSY: 'scanEFail' };
+  $('smgo').onclick = function () {
+    var d = scCur(); if (!d) return;
+    scBusy = true; $('smform').hidden = true; $('smrun').hidden = false; scStage(''); $('smdl').hidden = $('smagain').hidden = $('smok').hidden = true;
+    $('smstate').textContent = L('scanSending'); $('smdetail').textContent = L('scanAt', { s: d.stationName, d: d.name });
+    function fin(ok, t, det) { scBusy = false; scStage(ok ? 'done' : 'fail'); $('smstate').textContent = t; $('smdetail').innerHTML = det || ''; $('smagain').hidden = false; $('smok').hidden = !ok ? false : true; }
+    fetch('/scan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Pin': pin() },
+      body: JSON.stringify({ station: d.station, device: d.id, dpi: +SC.dpi, mode: SC.mode, source: SC.src, format: SC.fmt }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (r) {
+        if (!r.ok || !r.j.sid) return fin(false, L('scanFailH'), esc(E(r.j.error) || L('scanEFail')));
+        var sid = r.j.sid, t0 = Date.now();
+        (function tick() {
+          fetch('/scan/' + sid).then(function (x) { return x.json(); }).then(function (j) {
+            if (j.state === 'ready') {
+              var url = '/scan/' + sid + '/file'; $('smdl').href = url; $('smdl').hidden = false;
+              fin(true, L('scanDoneH'), esc(L('scanDoneD', { p: j.pages || 1, k: kb(j.size || 0) })));
+              var a = document.createElement('a'); a.href = url; a.download = ''; document.body.appendChild(a); a.click(); a.remove();
+              return;
+            }
+            if (j.state === 'failed' || j.state === 'gone') return fin(false, L('scanFailH'), esc(L(SCERR[j.err] || 'scanEFail')));
+            $('smstate').textContent = j.state === 'scanning' ? L('scanNow') : L('scanWait');
+            if (Date.now() - t0 > 900000) return fin(false, L('scanFailH'), esc(L('scanEFail')));
+            setTimeout(tick, 1000);
+          }).catch(function () { setTimeout(tick, 2000); });
+        })();
+      }).catch(function () { fin(false, L('scanFailH'), esc(L('noReach'))); });
+  };
+  scLoad(); setInterval(scLoad, 15000);
 
   /* ---------------- "Add to this device" ---------------- */
   var hostp = location.host, ua = navigator.userAgent;

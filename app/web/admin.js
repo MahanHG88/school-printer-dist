@@ -16,11 +16,102 @@
     if (!pinEdited) $('pin').value = s.pin;
     $('log').innerHTML = s.log.map(function (l) {
       var m = l.match(/^(\S+)\s+(\S+)\s+(?:copies=(\d+)\s+)?exit=(.*)$/); if (!m) return '';
-      var f = (m[2].match(/-from([0-9a-f._]+)-c/i) || [])[1] || L('macMenu'), ok = m[4] == '0';
-      return '<tr><td class="ltr">' + esc(m[1].replace('T', ' ')) + '</td><td class="ltr">' + esc(f) + '</td><td>' + esc(m[3] || 1) + '</td><td><span class="tag ' + (ok ? 'ok' : 'err') + '" title="' + esc(m[4]) + '">' + (ok ? L('printed') : L('error')) + '</span></td></tr>';
+      var fm = m[2].match(/-from([0-9a-f._]+)(?:-via([A-Za-z0-9_]+))?-c/i) || [], f = fm[1] || (m[2] == 'print-loop' ? '-' : L('macMenu'));
+      if (fm[2]) f += ' · ' + L('viaSt', { s: fm[2].replace(/_/g, ' ') });
+      var sent = /^sent:/.test(m[4]), loop = /^loop:/.test(m[4]), ok = m[4] == '0' || /^0 /.test(m[4]) || sent;
+      var tag = sent ? L('sentTo', { s: m[4].slice(5) }) : loop ? L('loopTag') : ok ? L('printed') : L('error');
+      return '<tr><td class="ltr">' + esc(m[1].replace('T', ' ')) + '</td><td class="ltr">' + esc(f) + '</td><td>' + esc(m[3] || 1) + '</td><td><span class="tag ' + (ok ? 'ok' : 'err') + '" title="' + esc(loop ? L('loopHelp') : m[4]) + '">' + esc(tag) + '</span></td></tr>';
     }).join('') || '<tr><td colspan="4" class="mute">' + L('none') + '</td></tr>';
+    paintNet(s.net);
   }
-  window.onLang = function () { if (st.urls) paint(st); };
+
+  /* ---------------- printing network ---------------- */
+  var joining = 0, stnEdited = false, changing = false;
+  function pct(a, b) { return b ? Math.round(a / b * 100) : 0; }
+  function mb(n) { return n >= 1024 ? (n / 1024).toFixed(1) + ' GB' : n + ' MB'; }
+  function meter(p, txt) { var c = p >= 85 ? 'err' : p >= 60 ? 'warn' : 'ok'; return '<div class="meter ' + c + '"><i style="width:' + Math.max(3, Math.min(100, p)) + '%"></i></div><span class="mute">' + esc(txt) + '</span>'; }
+  var CONV = { office: 'convOffice', lo: 'convLo', signin: 'convSignin', none: 'convNone', peer: 'convNone' };
+  function pwCheck() {
+    var v = $('npw').value, n = Array.from(v).length;
+    $('npwcount').textContent = L('pwCount', { n: n }); $('npwcount').className = 'sm counter ' + (n >= 8 ? 'ok' : n ? 'warn' : 'mute');
+    var miss = n ? (n < 8 ? L('pwMissShort', { k: 8 - n }) : '') : L('pwMissEmpty');
+    $('nmiss').textContent = miss; $('njoin').disabled = !!miss || !!joining; return !miss;
+  }
+  function stnCheck() {
+    var n = Array.from($('stn').value.trim()).length;
+    $('stncount').textContent = L('stCount', { n: n }); $('stncount').className = 'sm counter ' + (n ? 'ok' : 'err');
+    $('stnsave').disabled = !n; if (!n) $('stncount').textContent += ' — ' + L('stMissEmpty'); return !!n;
+  }
+  function paintNet(n) {
+    if (!n) return;
+    $('netnosha').hidden = n.ok; var show = n.ok && (!n.joined || changing);
+    $('netjoin').hidden = !show; $('netok').hidden = !n.ok || !n.joined || changing;
+    var on = (n.stations || []).filter(function (x) { return x.online; }).length, all = (n.stations || []).length;
+    $('netdot').className = 'dot ' + (!n.joined ? '' : on > 1 ? 'ok' : 'warn');
+    $('netstate').textContent = !n.joined ? L('netAlone') : on > 1 ? L('netOn', { n: on }) : L('netSearching');
+    if (joining) {
+      var others = on - 1, waited = (Date.now() - joining) / 1000;
+      if (n.joined && others > 0) { joining = 0; changing = false; toast(L('tJoined', { n: others }), 'ok'); $('nprog').hidden = true; $('npw').value = ''; pwCheck(); paintNet(n); return; }
+      if (waited > 20) { joining = 0; changing = false; $('nprog').hidden = true; toast(L('tJoinedAlone'), 'ok'); $('npw').value = ''; pwCheck(); paintNet(n); return; }
+      $('nprogt').textContent = L('netLooking');
+    }
+    if (n.joined && !changing) {
+      $('netsum').textContent = on > 1 ? L('netSum', { n: on }) : L('netSumAlone');
+      var off = all - on, sub = [];
+      if (off) sub.push(L('netOff', { n: off }));
+      if (n.others) sub.push(L('netOthers', { n: n.others }));
+      sub.push(n.lastScan >= 0 ? L('netScanned', { s: n.lastScan }) : L('netScanning'));
+      $('netsub').textContent = sub.join(' · ');
+      if (!stnEdited && document.activeElement !== $('stn')) { $('stn').value = n.station; stnCheck(); }
+      if (!domEdited && document.activeElement !== $('dom')) { $('dom').value = n.domain || ''; domCheck(); }
+      $('tgdns').setAttribute('aria-checked', n.dns && !!n.domain); $('tgdns').disabled = !n.domain;
+      $('dnsstate').textContent = !n.domain ? L('dnsNoDom') : !n.dns ? L('dnsOff') : n.dnsState === 'on' ? L('dnsOn') : n.dnsState === 'busy' ? L('dnsBusy') : L('dnsStarting');
+      var ips = n.stations.filter(function (x) { return x.online; }).map(function (x) { return x.url.replace(/^https?:\/\/|:\d+$/g, ''); }), mainSt = n.stations.filter(function (x) { return x.id === n.main; })[0];
+      $('domhelp').textContent = n.domain ? L('domHelp', { d: n.domain, ips: ips.join(', '), m: mainSt ? mainSt.url.replace(/^https?:\/\/|:\d+$/g, '') : '' }) : '';
+      $('tgshare').setAttribute('aria-checked', n.share); $('tgaccept').setAttribute('aria-checked', n.accept); $('tgconv').setAttribute('aria-checked', n.conv);
+      $('stbody').innerHTML = n.stations.map(function (x) {
+        var stc = !x.online ? ['err', x.err == 'PASSWORD' ? L('stPw') : L('stOffline')] : !x.ready ? ['warn', x.pstatus == 'Normal' ? L('closed') : (SM[x.pstatus] ? L(SM[x.pstatus]) : x.pstatus || L('sNotFound'))] : ['ok', L('stReady')];
+        var cpu = x.online ? meter(x.cpu, x.cpu + '% · ' + L('cores', { n: x.cores })) : '<span class="mute">—</span>';
+        var mem = x.online && x.memTotal ? meter(100 - pct(x.memFree, x.memTotal), L('memFree', { m: mb(x.memFree) })) : '<span class="mute">—</span>';
+        var conv = !x.online ? '—' : L(CONV[x.conv] || 'convNone') + (x.convBusy ? ' · ' + L('convBusy', { n: x.convBusy }) : '');
+        return '<tr class="' + (x.here ? 'here' : '') + '"><td><b>' + esc(x.station) + '</b>' + (x.here ? ' <span class="tag ok">' + L('thisPc') + '</span>' : '') +
+          '<div class="mute sm ltr">' + esc(x.url.replace(/^https?:\/\//, '')) + (x.color ? ' · ' + L('colorC') : '') + (x.duplex ? ' · ' + L('sides') : '') + '</div></td>' +
+          '<td class="ltr">' + esc(x.printer || '—') + '</td><td><span class="tag ' + stc[0] + '">' + esc(stc[1]) + '</span></td>' +
+          '<td>' + (x.online ? L('qPages', { n: x.queue }) : '—') + '</td><td>' + cpu + '</td><td>' + mem + '</td><td class="sm">' + esc(conv) + '</td></tr>';
+      }).join('');
+    }
+  }
+  $('npw').oninput = pwCheck; $('npw').onkeydown = function (e) { if (e.key === 'Enter') $('njoin').click(); };
+  $('npwshow').onclick = function () { var t = $('npw').type === 'password'; $('npw').type = t ? 'text' : 'password'; this.textContent = L(t ? 'hide' : 'show'); };
+  $('njoin').onclick = function () {
+    if (!pwCheck()) return;
+    joining = Date.now(); $('njoin').disabled = true; $('nprog').hidden = false; $('nprogt').textContent = L('netConnecting');
+    api('set', { password: $('npw').value }).then(function (r) {
+      if (r.error) { joining = 0; $('nprog').hidden = true; pwCheck(); toast(E(r.error), 'err'); return; }
+      load(); fastLoad();
+    }).catch(function () { joining = 0; $('nprog').hidden = true; pwCheck(); toast(L('tNoServer'), 'err'); });
+  };
+  function fastLoad() { if (!joining) return; setTimeout(function () { load(); fastLoad(); }, 1500); }
+  $('nscan').onclick = function () { api('scan', {}).then(function () { toast(L('tScan'), 'ok'); }); };
+  $('nchange').onclick = function () { changing = true; $('npw').value = ''; pwCheck(); paintNet(st.net); $('npw').focus(); };
+  $('nleave').onclick = function () { if (confirm(L('confirmLeave'))) api('set', { password: '' }).then(function (r) { res(r, 'tLeft'); }); };
+  $('stn').oninput = function () { stnEdited = true; stnCheck(); };
+  $('stnsave').onclick = function () { if (stnCheck()) api('set', { station: $('stn').value.trim() }).then(function (r) { stnEdited = false; res(r, 'tStation'); }); };
+  [['tgshare', 'share'], ['tgaccept', 'accept'], ['tgconv', 'conv']].forEach(function (t) {
+    $(t[0]).onclick = function () { var o = {}; o[t[1]] = this.getAttribute('aria-checked') != 'true'; api('set', o).then(function (r) { res(r, 'tSaved'); }); };
+  });
+  var domEdited = false, DOMRX = /^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/;
+  function domCheck() {
+    var v = $('dom').value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, ''), ok = !v || DOMRX.test(v);
+    $('domhint').textContent = !v ? L('domEmpty') : ok ? (/\.(com|net|org|ir|io)$/.test(v) ? L('domReal') : L('domOk')) : L('domBad');
+    $('domhint').className = 'sm counter ' + (!v ? 'mute' : !ok ? 'err' : /\.(com|net|org|ir|io)$/.test(v) ? 'warn' : 'ok');
+    $('domsave').disabled = !ok; return ok ? v : null;
+  }
+  $('dom').oninput = function () { domEdited = true; domCheck(); };
+  $('domsave').onclick = function () { var v = domCheck(); if (v !== null) api('set', { domain: v }).then(function (r) { domEdited = false; res(r, 'tSaved'); }); };
+  $('tgdns').onclick = function () { api('set', { dns: this.getAttribute('aria-checked') != 'true' }).then(function (r) { res(r, 'tSaved'); }); };
+  pwCheck();
+  window.onLang = function () { if (st.urls) paint(st); pwCheck(); };
   function load() { api('info').then(function (s) { st = s; serverLang(s.lang); paint(s); }).catch(function () { toast(L('tNoServer'), 'err'); }); }
   function res(r, okKey) { toast(r.error ? E(r.error) : L(okKey), r.error ? 'err' : 'ok'); load(); }
   $('sw').onclick = function () { api('set', { open: !st.open }).then(load); };

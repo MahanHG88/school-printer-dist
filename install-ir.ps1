@@ -7,35 +7,40 @@
 # Offline:         download SchoolPrinter-windows.zip, unzip it, double-click Install.cmd
 #
 # What it does (undo: the same commands with uninstall.ps1, or Uninstall.cmd from the zip):
-#   - C:\ProgramData\MacPrint\  PrintServer.ps1, watch.ps1, convert.ps1, web\ (pages + pdf.js), config.txt, Inbox\, Uploads\
-#   - scheduled tasks "MacPrint Web" + "MacPrint Inbox" (SYSTEM, at startup, auto-restart)
+#   - C:\ProgramData\MacPrint\  PrintServer.ps1, watch.ps1, convert.ps1, sync.ps1, syncd.ps1, dns.ps1, control.ps1, web\,
+#     config.txt, Inbox\, Uploads\, Outbox\, Sync\ (printing network: only SYSTEM and administrators can read it)
+#   - scheduled tasks "MacPrint Web", "MacPrint Inbox", "MacPrint Sync", "MacPrint DNS" (SYSTEM, at startup, auto-restart)
 #   - scheduled task "MacPrint Convert" (whoever signs in; turns Word/Excel/PowerPoint into PDF with Microsoft Office)
-#   - firewall rule "MacPrint Web": TCP 8631 from the local network only
-#   - desktop shortcut "School Printer (Admin)" for every user
+#   - firewall rules "MacPrint Web" (TCP 8631 + 80) and "MacPrint DNS" (UDP 53): from the local network only
+#   - desktop shortcuts for every user: "School Printer (Admin)", "Start School Printer", "Stop School Printer"
 
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.5.1'
-    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.5.1/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+    $Version = '1.6.0'
+    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.0/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
     $Files   = [ordered]@{    # path under /app/  =  SHA-256, size   (filled in by build.sh)
-        'win/PrintServer.ps1' = @('13EE717FB3CAB1351DA2AC9A650D7D45295DA5B5D0D6F4DC3EEDFBF24C1B1DB2', 21389)
-        'win/watch.ps1' = @('1CECCD69D589EA2B0EF909D247C6FBBB16CA8D945CD6F4E99F491629BFD78827', 11962)
+        'win/PrintServer.ps1' = @('0BA54A9DA1506984AD92C41B23F37109B8BB4E36352D8260586584A9A368FE14', 35855)
+        'win/watch.ps1' = @('01B558F33297CCF1FFE67EA6FF6DE2376014EC1032876CA900D2C507D35A229A', 13388)
         'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
-        'win/ipp.ps1' = @('3DD17C5B7B0BBB6055AC2E53148585C622E5AC80FF56FE3D23B799067DB875A1', 21714)
-        'web/admin.html' = @('0363FA14A2FEF69F97EEF99531F94D232DAFD4933601E0F6CE0DBFD48FEA2EAF', 3575)
-        'web/admin.js' = @('18D5A88D21E9140AD57C70DAF3E1D465BB70E8A9726F1BE67563CF75688F57A5', 3804)
-        'web/app.css' = @('B325628E2D24E680509CA4EBF6D682D9C4CE374A14C458C1258F715BCC46E032', 14238)
-        'web/i18n.js' = @('00EA4B3843DD9B7D096862DABAC8C24EC65B2942E40066FE9230646A3D39B39D', 14512)
+        'win/ipp.ps1' = @('037153FEF862F76BBF72CB0AE6D1B2BBF695E5F45E6069EB2292D659FA3CF6FA', 23063)
+        'win/sync.ps1' = @('B63C27AB60721D58C97540D118F8EEB4E8E00528967AE1D9C5CAAEC64F4DF759', 26065)
+        'win/syncd.ps1' = @('2DC386874429A9D790686EC00D3A22802B858EB3AE5F1D523020241A62A16002', 36783)
+        'win/dns.ps1' = @('409515475605CF8E4B245B8B593BB2D6FE86708017C774DC55A886139CBCA9EB', 5293)
+        'win/control.ps1' = @('4B98219C7F23117F8CEB00EFBBE863D37253A07105C60C3F837E5EB758E560CF', 1863)
+        'web/admin.html' = @('0454E6EC8A89DE07B9778013AF5F6BE5D18B78F379ECAB4FCDAD319EFA686C09', 7570)
+        'web/admin.js' = @('B9DAC0CA67D2FAC7384A82FF9512740CE164DA15DDA7C82E2EEEF52731A79C9E', 12042)
+        'web/app.css' = @('5D12D643F632D022034EAB5693578C9730D07DAE3FD3F633DBFBBCBB883F6ADA', 22194)
+        'web/i18n.js' = @('6E52BB722C168AC0BFDEA0D85D2E7A49D8D6A14F6783CD26063BF11BD49E0543', 31241)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('5F5A21D3E84973C5C464BE7943382BE4AA44BD298D49FB7DF522E89E265DDF0A', 7435)
-        'web/print.js' = @('B96BC982123F8A06EDE21CAF90C2A1BE87565B29E025318D187CF5057A7D4532', 21112)
+        'web/print.html' = @('04EC3A440FBAA477CB0BA7223DCCFADF3207ABCFF52F52C21DB3D72EA7E81C20', 13876)
+        'web/print.js' = @('42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86', 35529)
         'web/vazirmatn.woff2' = @('4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92', 111152)
     }
-    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.5.1/install-ir.ps1'))"
+    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.0/install-ir.ps1'))"
 
     # ================================================================ look: live dashboard
     $E = [char]27
@@ -66,7 +71,7 @@ function Install-SchoolPrinter {
     Add-Step 'network'  'Open the local network'          2.0
     Add-Step 'service'  'Start the print service'         3.0
     Add-Step 'office'   'Word / Excel / PowerPoint'       1.5
-    Add-Step 'shortcut' 'Desktop shortcut'                0.3
+    Add-Step 'shortcut' 'Desktop shortcuts'               0.4
     Add-Step 'verify'   'Check it answers'                2.0
     $script:plan = @("$($MU)Network    $R$($D)measuring...$R", "$($MU)Download   $R$D-$R", "$($MU)Estimate   $R$D-$R")
     $script:t0 = Get-Date; $script:drawn = 0; $script:last = [datetime]::MinValue; $script:frame = 0
@@ -104,7 +109,7 @@ function Install-SchoolPrinter {
         $pct = [int][math]::Min(100, [math]::Floor(100 * $done / [math]::Max(0.1, $total)))
         $w = 34; $fill = [int][math]::Floor($w * $pct / 100); $bar = ''
         for ($i = 0; $i -lt $w; $i++) { if ($i -lt $fill) { $bar += "$E[38;2;$(Rgb ($i / ($w - 1)))m" + [char]0x2588 } else { $bar += "$E[38;2;58;60;86m" + [char]0x2591 } }
-        $L.Add("   $bar$R  $B$('{0,3}' -f $pct)%$R   $D$(if ($rem -lt 1) { <1 s } else { "~$(Secs $rem)" }) left  $dot  $(Secs ($now - $script:t0).TotalSeconds) elapsed$R")
+        $L.Add("   $bar$R  $B$('{0,3}' -f $pct)%$R   $D$(if ($rem -lt 1) { '<1 s' } else { "~$(Secs $rem)" }) left  $dot  $(Secs ($now - $script:t0).TotalSeconds) elapsed$R")
         $sb = New-Object Text.StringBuilder
         if ($script:drawn) { [void]$sb.Append("$E[$($script:drawn)A") }
         foreach ($line in $L) { [void]$sb.Append("`r$E[2K$line`n") }   # not $l: PowerShell names ignore case ($l IS $L)
@@ -245,7 +250,7 @@ function Install-SchoolPrinter {
             return
         }
         if (-not $stopped) {
-            foreach ($t in 'MacPrint Inbox', 'MacPrint Web', 'MacPrint Convert') { Stop-ScheduledTask -TaskName $t -EA SilentlyContinue }
+            foreach ($t in 'MacPrint Inbox', 'MacPrint Web', 'MacPrint Convert', 'MacPrint Sync', 'MacPrint DNS') { Stop-ScheduledTask -TaskName $t -EA SilentlyContinue }
             Get-Process SumatraPDF -EA SilentlyContinue | Where-Object { $_.Path -like "$Root*" } | Stop-Process -Force -EA SilentlyContinue
             $stopped = $true
         }
@@ -255,6 +260,8 @@ function Install-SchoolPrinter {
     }
     Remove-Item "$Root\SumatraPDF.exe", "$Root\SumatraPDF-settings.txt" -Force -EA SilentlyContinue   # no longer needed
     icacls "$Root\Uploads" /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null       # the Office helper (signed-in user) writes PDFs here
+    New-Item -ItemType Directory -Path "$Root\Sync", "$Root\Outbox" -Force | Out-Null
+    icacls "$Root\Sync" /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null    # the network key: SYSTEM + administrators only
     $dlSecs = ((Get-Date) - $script:dlStart).TotalSeconds
     if ($fetched) { Finish 'files' ("{0} files  $dot  {1}  $dot  {2:N1} KB/s average  $dot  SHA-256 verified" -f $fetched, (KB $needBytes), (($needBytes / 1024) / [math]::Max(0.05, $dlSecs))) }
     else { Finish 'files' 'already up to date' }
@@ -273,15 +280,22 @@ function Install-SchoolPrinter {
         elseif ($real.Count -eq 1) { $cfg.printer = $real[0].Name }
         else {
             $list = if ($real.Count) { $real } else { $all }
-            if (-not $list.Count) { Fail 'printer' 'No printers are installed.' 'Plug the printer in, check Windows can print a test page, then run this again.'; return }
+            if (-not $list.Count) {    # no printer: fine for a computer that only has a scanner
+                $scanners = 0; try { $scanners = @((New-Object -ComObject WIA.DeviceManager).DeviceInfos | Where-Object { $_.Type -eq 1 }).Count } catch {}
+                if (-not $scanners) { Fail 'printer' 'No printers or scanners are installed.' 'Plug the printer or scanner in, check Windows can use it, then run this again.'; return }
+                $cfg.printer = ''; $list = @()
+            }
             $lines = @("$($B)Which printer should everyone use?$R")
             for ($i = 0; $i -lt $list.Count; $i++) { $lines += "   $AC$($i + 1)$R  $($list[$i].Name)  $D$($list[$i].PortName)$R" }
-            do { $n = Ask $lines 'Number' } until ($n -match '^\d+$' -and [int]$n -ge 1 -and [int]$n -le $list.Count)
-            $cfg.printer = $list[[int]$n - 1].Name
+            if ($list.Count) {
+                do { $n = Ask $lines 'Number' } until ($n -match '^\d+$' -and [int]$n -ge 1 -and [int]$n -le $list.Count)
+                $cfg.printer = $list[[int]$n - 1].Name
+            }
         }
     }
-    Set-Content $cfgFile @('# School Printer settings (also changeable on the admin page)', "printer=$($cfg.printer)", "pin=$($cfg.pin)", "open=$($cfg.open)", "lang=$($cfg.lang)") -Encoding UTF8
-    Finish 'printer' ($cfg.printer + $(if ($kept) { '  (kept)' } else { '' }))
+    $keys = @('printer', 'pin', 'open', 'lang') + @($cfg.Keys | Where-Object { $_ -notin 'printer', 'pin', 'open', 'lang' } | Sort-Object)    # keeps the network settings
+    Set-Content $cfgFile (@('# School Printer settings (also changeable on the admin page)') + @($keys | ForEach-Object { "$_=$($cfg[$_])" })) -Encoding UTF8
+    Finish 'printer' $(if ($cfg.printer) { $cfg.printer + $(if ($kept) { '  (kept)' } else { '' }) } else { 'no printer - a scan station' })
 
     # ---------------------------------------------------------------- 5. network
     Begin 'network'
@@ -293,9 +307,11 @@ function Install-SchoolPrinter {
             else { $profiles += "$($np.Name): Public (left as is)" }
         } else { $profiles += "$($np.Name): $($np.NetworkCategory)" }
     }
-    Remove-NetFirewallRule -DisplayName 'MacPrint Web' -EA SilentlyContinue
-    New-NetFirewallRule -DisplayName 'MacPrint Web' -Description 'School Printer web page (print.mahanmirzaee.com). Local network only.' `
-        -Direction Inbound -Protocol TCP -LocalPort $Port -RemoteAddress LocalSubnet -Profile Private, Domain -Action Allow | Out-Null
+    Remove-NetFirewallRule -DisplayName 'MacPrint Web', 'MacPrint DNS' -EA SilentlyContinue
+    New-NetFirewallRule -DisplayName 'MacPrint Web' -Description 'School Printer web page and printing network (print.mahanmirzaee.com). Local network only.' `
+        -Direction Inbound -Protocol TCP -LocalPort $Port, 80 -RemoteAddress LocalSubnet -Profile Private, Domain -Action Allow | Out-Null
+    New-NetFirewallRule -DisplayName 'MacPrint DNS' -Description 'School Printer: answers the school address (when one is set). Local network only.' `
+        -Direction Inbound -Protocol UDP -LocalPort 53 -RemoteAddress LocalSubnet -Profile Private, Domain -Action Allow | Out-Null
     Finish 'network' ("port $Port, local network only  $dot  " + ($profiles -join ', '))
 
     # ---------------------------------------------------------------- 6. service
@@ -304,14 +320,14 @@ function Install-SchoolPrinter {
     $prin = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $trg  = New-ScheduledTaskTrigger -AtStartup
     $k = 0
-    foreach ($t in @(@('MacPrint Web', 'PrintServer.ps1'), @('MacPrint Inbox', 'watch.ps1'))) {
+    foreach ($t in @(@('MacPrint Web', 'PrintServer.ps1'), @('MacPrint Inbox', 'watch.ps1'), @('MacPrint Sync', 'syncd.ps1'), @('MacPrint DNS', 'dns.ps1'))) {
         $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Root\$($t[1])`""
         Stop-ScheduledTask -TaskName $t[0] -EA SilentlyContinue
         Register-ScheduledTask -TaskName $t[0] -Action $act -Trigger $trg -Settings $set -Principal $prin -Force | Out-Null
         Start-ScheduledTask -TaskName $t[0]
-        $k++; Prog 'service' ($k / 2) "$($t[0]) started"
+        $k++; Prog 'service' ($k / 4) "$($t[0]) started"
     }
-    Finish 'service' 'web page + print engine  -  start with Windows, restart themselves'
+    Finish 'service' 'web page, print engine, printing network, school address  -  start with Windows, restart themselves'
 
     # ---------------------------------------------------------------- 7. Office helper
     Begin 'office'
@@ -329,7 +345,14 @@ function Install-SchoolPrinter {
     # ---------------------------------------------------------------- 8. shortcut
     Begin 'shortcut'
     Set-Content "$env:PUBLIC\Desktop\School Printer (Admin).url" @('[InternetShortcut]', "URL=http://localhost:$Port/admin", 'IconFile=C:\Windows\System32\shell32.dll', 'IconIndex=16') -Encoding ascii
-    Finish 'shortcut' '"School Printer (Admin)" on every desktop'
+    $sh = New-Object -ComObject WScript.Shell
+    foreach ($x in @(@('Start School Printer', 'start', 137), @('Stop School Printer', 'stop', 131))) {    # start: then opens the admin page
+        $l = $sh.CreateShortcut("$env:PUBLIC\Desktop\$($x[0]).lnk")
+        $l.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $l.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Root\control.ps1`" $($x[1])"
+        $l.IconLocation = "$env:SystemRoot\System32\shell32.dll,$($x[2])"; $l.WindowStyle = 7; $l.Description = "$($x[0]) (asks for permission)"; $l.Save()
+    }
+    Finish 'shortcut' '"School Printer (Admin)", "Start School Printer", "Stop School Printer" on every desktop'
 
     # ---------------------------------------------------------------- 9. verify
     Begin 'verify'

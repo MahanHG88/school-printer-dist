@@ -195,6 +195,13 @@ function Ipp-Handle($ctx, $c, $caps) {
         }
         0x0002 {    # Print-Job
             if ($c.open -eq '0') { Ipp-Error $res $r 0x0506 'Printing is closed right now.'; return }
+            if ([string](First $r 'job-name' '') -like 'School Printer - *') {    # our own job coming back: a School Printer queue is set as the printer
+                $stamp = Join-Path $SpSync 'loop.log'
+                if (-not (Test-Path $stamp) -or ((Get-Date) - (Get-Item $stamp).LastWriteTime).TotalSeconds -gt 60) {
+                    [IO.File]::WriteAllText($stamp, ''); Sp-LogLine 'print-loop  copies=0  exit=loop: a School Printer queue is set as the printer - choose the real printer on the admin page'
+                }
+                Ipp-Error $res $r 0x0404 'Print loop: this job came from School Printer itself.'; return
+            }
             if ($total -gt 50MB) { Ipp-Error $res $r 0x0409 'File is bigger than 50 MB.'; return }
             $d = $r.data; $ext = ''
             if ($d.Length -ge 4 -and $d[0] -eq 0x25 -and $d[1] -eq 0x50 -and $d[2] -eq 0x44 -and $d[3] -eq 0x46) { $ext = 'pdf' }
@@ -213,12 +220,17 @@ function Ipp-Handle($ctx, $c, $caps) {
             $from = $req.RemoteEndPoint.Address.ToString() -replace '[^0-9A-Fa-f.]', '_'
             $stamp = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), (Get-Random -Maximum 99999)
             $base = "$stamp-from$from-c$copies"
-            [IO.File]::WriteAllBytes((Join-Path $inbox "$base.$ext.part"), $d)
-            Move-Item (Join-Path $inbox "$base.$ext.part") (Join-Path $inbox "$base.$ext")
-            $job = @{ file = "$base.$ext"; name = "$jobName (from $(if ($user) { $user } else { $from }))"; copies = $copies; pages = ''; paper = (Paper-From $r $caps)
-                      orientation = $orient; color = $color; duplex = $duplex; margins = 'none'; scale = $scale; nup = 1; hm = $caps.hm; via = 'ipp' }
-            [IO.File]::WriteAllText((Join-Path $inbox "$base.tmp"), (ConvertTo-Json -Compress $job), [Text.Encoding]::UTF8)
-            Move-Item (Join-Path $inbox "$base.tmp") (Join-Path $inbox "$base.json")
+            $tmp = Join-Path $SpUp "$base.$ext.part"; [IO.File]::WriteAllBytes($tmp, $d)
+            $paper = Paper-From $r $caps; $pp = $caps.papers | Where-Object { $_.n -eq $paper } | Select-Object -First 1
+            $jid = Sp-Rand 8
+            $job = @{ name = "$jobName (from $(if ($user) { $user } else { $from }))"; copies = $copies; pages = ''; paper = $paper; orientation = $orient; color = $color
+                      duplex = $duplex; margins = 'none'; scale = $scale; nup = 1; hm = $caps.hm; via = 'ipp'; jid = $jid; sheets = $copies; from = $from
+                      pw = $(if ($pp) { $pp.w } else { '' }); ph = $(if ($pp) { $pp.h } else { '' }); land = ($orient -eq 'landscape') }
+            $pick = Sp-PickStation 'auto' @{ color = ($color -eq 'color'); duplex = ($duplex -ne 'off'); pw = $job.pw; ph = $job.ph } $c    # shared like web jobs
+            $local = Get-Caps $c.printer; if (-not $pick.x) { if (-not $local.color) { $job.color = 'gray' }; if (-not $local.duplex) { $job.duplex = 'off' } }
+            Sp-JobSet $jid @{ state = $(if ($pick.x) { 'sending' } else { 'queued' }); station = $(if ($pick.x) { $pick.x.station } else { Sp-StationName $c }); sid = $(if ($pick.x) { $pick.x.id } else { Sp-NodeId }); sheets = $copies; picked = $false }
+            Sp-Hold $jid $tmp ".$ext" $job
+            Add-Job $tmp ".$ext" $base $job $pick.x $false
             $script:IppJobId++
             Ipp-Begin $r 0
             W ([byte[]]@(0x02))

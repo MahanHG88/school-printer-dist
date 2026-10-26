@@ -1,10 +1,44 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>School Printer Admin</title><link rel="stylesheet" href="/assets/app.css?v=1.5.1"></head>
+<meta name="color-scheme" content="light dark"><title>School Printer Admin</title><link rel="stylesheet" href="/assets/app.css?v=1.6.0"></head>
 <body data-title="adminTitle"><div class="bg"><i></i><i></i><i></i></div>
 <main class="wrap" style="max-width:1000px">
 <header class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7" rx="1"/></svg></div>
 <div class="bt"><b data-t="title">School Printer</b><span class="sub" data-t="adminSub">Admin</span></div><div class="sp"></div>
 <button class="lang" id="lang" type="button" aria-label="Language">EN</button><a class="btn" href="/" data-t="openPrint">Open print page</a></header>
+<section class="glass card netcard" id="net"><div class="nethead"><span class="eyebrow" data-t="netTitle">Printing network</span><span class="pill" id="netpill"><span class="dot" id="netdot"></span><span id="netstate">&hellip;</span></span></div>
+<div id="netjoin" hidden>
+  <h2 class="neth" data-t="netJoinH">Connect this printer to the others</h2>
+  <p class="mute sm" data-t="netJoinP">Type the printing network password. Every School Printer on this network with the same password connects by itself &mdash; nothing else to set up. This computer remembers it, so you only do this once.</p>
+  <label class="lb" for="npw"><span data-t="netPw">Network password</span> <span class="req">&#9733; <span data-t="required">required</span></span></label>
+  <div class="inl"><input id="npw" type="password" autocomplete="off" maxlength="128" data-tp="netPwPh"><button class="btn" id="npwshow" type="button" data-t="show">Show</button></div>
+  <div class="sm counter" id="npwcount"></div>
+  <div class="btns"><button class="cta small" id="njoin" type="button" data-t="netConnect">Connect</button><span class="missing sm" id="nmiss"></span></div>
+  <div class="netprog" id="nprog" hidden><span class="spin"></span><span id="nprogt"></span></div>
+</div>
+<div id="netok" hidden>
+  <div class="netsum"><div><b id="netsum"></b><div class="mute sm" id="netsub"></div></div>
+    <div class="btns"><button class="btn" id="nscan" type="button" data-t="netScan">Look for printers now</button><button class="btn" id="nchange" type="button" data-t="netChange">Change password</button><button class="btn danger" id="nleave" type="button" data-t="netLeave">Disconnect</button></div></div>
+  <div class="grid net3">
+    <div><label class="lb" for="stn"><span data-t="stName">Station name</span> <span class="req">&#9733; <span data-t="required">required</span></span></label>
+      <div class="inl"><input id="stn" maxlength="40" autocomplete="off" data-tp="stNamePh"><button class="btn" id="stnsave" type="button" data-t="save">Save</button></div>
+      <div class="sm counter" id="stncount"></div><div class="mute sm" data-t="stNameNote"></div></div>
+    <div class="toggles">
+      <div class="tr sm"><div><b data-t="tgShare">Share print jobs</b><div class="mute" data-t="tgShareSub"></div></div><button class="switch" id="tgshare" role="switch" aria-checked="false" type="button"><i></i></button></div>
+      <div class="tr sm"><div><b data-t="tgAccept">Print jobs from other stations</b><div class="mute" data-t="tgAcceptSub"></div></div><button class="switch" id="tgaccept" role="switch" aria-checked="false" type="button"><i></i></button></div>
+      <div class="tr sm"><div><b data-t="tgConv">Share file conversion</b><div class="mute" data-t="tgConvSub"></div></div><button class="switch" id="tgconv" role="switch" aria-checked="false" type="button"><i></i></button></div>
+    </div>
+  </div>
+  <div class="domain">
+    <label class="lb" for="dom"><span data-t="domL">School address</span> <span class="mute" data-t="optional">optional</span></label>
+    <div class="inl"><input id="dom" class="ltr" maxlength="253" autocomplete="off" data-tp="domPh"><button class="btn" id="domsave" type="button" data-t="save">Save</button></div>
+    <div class="sm counter" id="domhint"></div>
+    <div class="tr sm"><div><b data-t="tgDns">Answer the school address on this network</b><div class="mute" id="dnsstate"></div></div><button class="switch" id="tgdns" role="switch" aria-checked="false" type="button"><i></i></button></div>
+    <div class="mute sm" id="domhelp"></div>
+  </div>
+  <div class="tablewrap"><table class="stations"><thead><tr><th data-t="thStation">Station</th><th data-t="printer">Printer</th><th data-t="thState">Status</th><th data-t="thQueue">Waiting</th><th data-t="thCpu">Processor</th><th data-t="thMem">Memory</th><th data-t="thConv">Converts files</th></tr></thead><tbody id="stbody"></tbody></table></div>
+</div>
+<div class="note" id="netnosha" hidden data-t="netNoSha"></div>
+</section>
 <section class="glass hero"><div><span class="eyebrow" data-t="tellAll">Other devices — type this in the address bar</span><div class="url ltr" id="urls">&hellip;</div><div class="mute sm" id="name"></div></div>
 <button class="btn" id="copy" data-t="copyAddr">Copy address</button></section>
 <div class="grid">
@@ -16,12 +50,12 @@
 <section class="glass card"><span class="eyebrow" data-t="printer">Printer</span><select id="psel" class="ltr"></select>
 <div class="btns"><button class="btn" id="test" data-t="test">Print test page</button><button class="btn danger" id="clear" data-t="clear">Clear stuck jobs</button></div></section>
 <section class="glass card"><span class="eyebrow" data-t="pin">PIN</span><div class="inl"><input id="pin" placeholder="No PIN" data-tp="noPin" maxlength="20" autocomplete="off"><button class="btn" id="savepin" data-t="save">Save</button></div>
-<div class="mute sm" style="margin-top:8px" data-t="pinNote"></div></section>
+<div class="mute sm" style="margin-top:8px" data-t="pinNoteA"></div></section>
 <section class="glass card"><span class="eyebrow" data-t="langCard">Language</span><select id="lsel"><option value="fa">فارسی</option><option value="en">English</option></select>
 <div class="mute sm" style="margin-top:8px" data-t="langNote"></div></section>
 </div>
 <section class="glass card" style="margin-top:16px"><span class="eyebrow" data-t="recent">Recent prints</span><table><thead><tr><th data-t="time">Time</th><th data-t="from">From</th><th data-t="copies">Copies</th><th data-t="result">Result</th></tr></thead><tbody id="log"></tbody></table></section>
 </main><div id="toast" class="glass"></div>
-<script src="/assets/i18n.js?v=1.5.1"></script>
-<script src="/assets/admin.js?v=1.5.1"></script>
+<script src="/assets/i18n.js?v=1.6.0"></script>
+<script src="/assets/admin.js?v=1.6.0"></script>
 </body></html>

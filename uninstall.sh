@@ -5,13 +5,13 @@
 if [ "$(uname -s)" = Darwin ]; then
     DIR="/Library/Application Support/SchoolPrinter"; plist=/Library/LaunchDaemons/com.mahanmirzaee.schoolprinter.plist
     launchctl bootout system "$plist" 2>/dev/null || true; rm -f "$plist"
-    u="$(stat -f %Su /dev/console 2>/dev/null || true)"; rm -f "$(eval echo "~$u")/Desktop/School Printer (Admin).webloc"
+    u="$(stat -f %Su /dev/console 2>/dev/null || true)"; d="$(eval echo "~$u")/Desktop"; rm -f "$d/School Printer (Admin).webloc" "$d/Start School Printer.command" "$d/Stop School Printer.command"
 else
     DIR=/opt/schoolprinter
     systemctl disable --now schoolprinter 2>/dev/null || true; rm -f /etc/systemd/system/schoolprinter.service; systemctl daemon-reload
     command -v ufw >/dev/null && ufw status numbered 2>/dev/null | grep -q 'School Printer' && \
         ufw status numbered | awk -F'[][]' '/School Printer/ {print $2}' | sort -rn | while read -r n; do yes | ufw delete "$n" >/dev/null; done
-    u="${SUDO_USER:-$(logname 2>/dev/null || true)}"; rm -f "$(eval echo "~$u")/Desktop/school-printer-admin.desktop"
+    u="${SUDO_USER:-$(logname 2>/dev/null || true)}"; d="$(eval echo "~$u")/Desktop"; rm -f "$d/school-printer-admin.desktop" "$d/school-printer-start.desktop" "$d/school-printer-stop.desktop"
 fi
 echo "School Printer stopped and removed from startup."
 read -r -p "Also delete $DIR (program, settings, print log)? [y/N] " a </dev/tty || a=""

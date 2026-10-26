@@ -1,11 +1,12 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>School Printer</title><link rel="stylesheet" href="/assets/app.css?v=1.5.1"></head>
+<meta name="color-scheme" content="light dark"><title>School Printer</title><link rel="stylesheet" href="/assets/app.css?v=1.6.0"></head>
 <body data-title="title"><div class="bg"><i></i><i></i><i></i></div>
 <main class="wrap">
 <header class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7" rx="1"/></svg></div>
 <div class="bt"><b data-t="title">School Printer</b><span id="pname" class="sub ltr">&nbsp;</span></div><div class="sp"></div>
 <span class="pill"><span class="dot" id="dot"></span><span id="qt" data-t="connecting">Connecting&hellip;</span></span>
 <button class="btn addbtn" id="addbtn" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M12 13v6M9 16h6"/></svg><span data-t="addDev">Add to this device</span></button>
+<button class="btn addbtn" id="scanbtn" type="button" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="18" height="8" rx="2"/><path d="M3 12 19 5M7 16h4"/></svg><span data-t="scanBtn">Scan</span></button>
 <button class="lang" id="lang" type="button" aria-label="Language">EN</button></header>
 <div class="modal" id="addmodal" hidden><div class="glass sheetbox" role="dialog" aria-modal="true" aria-labelledby="addh">
   <div class="mhead"><b id="addh" data-t="addTitle">Print from any app on this device</b><button class="x" id="addclose" type="button" data-t="close">Close</button></div>
@@ -20,6 +21,63 @@
   <div class="ospane" data-os="linux"><p data-t="linA"></p><div class="cmdbox"><code id="cmdlin" class="ltr"></code><button class="btn" type="button" data-copy="cmdlin" data-t="copy">Copy</button></div></div>
   <div class="ospane" data-os="phone"><p data-t="phoneA"></p></div>
   <p class="note" id="addpin" data-t="pinNote" hidden></p>
+</div></div>
+
+<div class="modal" id="pm" hidden><div class="glass sheetbox pmbox" role="dialog" aria-modal="true" aria-labelledby="pmh">
+  <div id="pmchoose">
+    <div class="mhead"><b id="pmh" data-t="pmTitle">How should this print?</b><button class="x" id="pmclose" type="button" data-t="close">Close</button></div>
+    <p class="mute sm" id="pmsum"></p>
+    <div class="opts" role="radiogroup">
+      <button class="opt" type="button" role="radio" data-mode="auto"><span class="oi"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
+        <span class="ot"><b data-t="pmAuto">Resource efficient</b><em data-t="pmAutoSub"></em><em class="onow" id="pmnow"></em></span><span class="ock"></span></button>
+      <button class="opt" type="button" role="radio" data-mode="pick"><span class="oi"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7" rx="1"/></svg></span>
+        <span class="ot"><b data-t="pmPick">Specific printer and office</b><em data-t="pmPickSub"></em></span><span class="ock"></span></button>
+    </div>
+    <div id="pmpick" hidden><label class="lb" for="pmsel"><span data-t="pmStation">Printer and office</span> <span class="req">&#9733;</span></label><select id="pmsel"></select><div class="mute sm" id="pmhint"></div></div>
+    <p class="mute sm" id="pmone" data-t="pmOne" hidden></p>
+    <button class="cta" id="pmgo" type="button" data-t="print">Print</button><div class="missing sm" id="pmmiss"></div>
+  </div>
+  <div id="pmrun" hidden>
+    <div class="stage" id="pmstage" aria-hidden="true">
+      <div class="burst"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <svg class="pr" viewBox="0 0 160 140" width="160" height="140">
+        <defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--acc)"/><stop offset="1" stop-color="var(--acc2)"/></linearGradient></defs>
+        <g class="sheetout"><rect x="48" y="20" width="64" height="78" rx="4" fill="#fff" stroke="rgba(16,19,39,.12)"/><rect x="58" y="34" width="44" height="5" rx="2.5" fill="#d9dbef"/><rect x="58" y="46" width="34" height="5" rx="2.5" fill="#e4e6f5"/><rect x="58" y="58" width="40" height="5" rx="2.5" fill="#e4e6f5"/></g>
+        <rect x="24" y="62" width="112" height="52" rx="12" fill="url(#pg)"/><rect x="40" y="62" width="80" height="8" rx="4" fill="rgba(0,0,0,.18)"/>
+        <circle cx="118" cy="80" r="4" fill="#fff" class="led"/><rect x="44" y="96" width="72" height="30" rx="5" fill="#fff" class="tray"/>
+      </svg>
+      <svg class="ck" viewBox="0 0 52 52" width="76" height="76"><circle cx="26" cy="26" r="24" fill="none"/><path fill="none" d="M15 27l7 7 15-16"/></svg>
+      <svg class="xx" viewBox="0 0 52 52" width="76" height="76"><circle cx="26" cy="26" r="24" fill="none"/><path fill="none" d="M18 18l16 16M34 18 18 34"/></svg>
+    </div>
+    <h3 class="pmh" id="pmstate"></h3><p class="pmd" id="pmdetail"></p><ul class="pmlist" id="pmlist"></ul>
+    <button class="cta" id="pmok" type="button" data-t="pmOk" hidden>OK</button>
+  </div>
+</div></div>
+
+<div class="modal" id="sm" hidden><div class="glass sheetbox pmbox" role="dialog" aria-modal="true" aria-labelledby="smh">
+  <div id="smform">
+    <div class="mhead"><b id="smh" data-t="scanTitle">Scan a document</b><button class="x" id="smclose" type="button" data-t="close">Close</button></div>
+    <p class="mute sm" data-t="scanLead"></p>
+    <label class="lb" for="smdev"><span data-t="scanWhich">Scanner</span> <span class="req">&#9733; <span data-t="required">required</span></span></label><select id="smdev"></select>
+    <div class="settings">
+      <div class="row"><label class="lb" for="smdpi" data-t="scanDpi">Resolution</label><select id="smdpi"></select></div>
+      <div class="row"><span class="lb" data-t="colorL">Color</span><div class="seg" id="smmode"><button type="button" data-v="color" data-t="colorC">Color</button><button type="button" data-v="gray" data-t="scanGray">Grayscale</button></div></div>
+      <div class="row" id="smsrcrow"><span class="lb" data-t="scanSrc">Paper in</span><div class="seg" id="smsrc"><button type="button" data-v="flatbed" data-t="scanFlat">Glass (one page)</button><button type="button" data-v="feeder" data-t="scanFeed">Feeder (all pages)</button></div></div>
+      <div class="row"><span class="lb" data-t="scanFmt">File</span><div class="seg" id="smfmt"><button type="button" data-v="pdf">PDF</button><button type="button" data-v="jpg">JPEG</button><button type="button" data-v="png">PNG</button></div></div>
+      <div class="hint" id="smhint"></div>
+    </div>
+    <button class="cta" id="smgo" type="button" data-t="scanGo">Scan</button><div class="missing sm" id="smmiss"></div>
+  </div>
+  <div id="smrun" hidden>
+    <div class="stage scanstage" id="smstage" aria-hidden="true">
+      <div class="burst"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="scanner"><div class="lid"></div><div class="glassbed"><div class="beam"></div></div></div>
+      <svg class="ck" viewBox="0 0 52 52" width="76" height="76"><circle cx="26" cy="26" r="24" fill="none"/><path fill="none" d="M15 27l7 7 15-16"/></svg>
+      <svg class="xx" viewBox="0 0 52 52" width="76" height="76"><circle cx="26" cy="26" r="24" fill="none"/><path fill="none" d="M18 18l16 16M34 18 18 34"/></svg>
+    </div>
+    <h3 class="pmh" id="smstate"></h3><p class="pmd" id="smdetail"></p>
+    <div class="btns center"><a class="cta small" id="smdl" href="#" hidden data-t="scanDl">Download</a><button class="btn" id="smagain" type="button" data-t="scanAgain" hidden>Scan another</button><button class="btn" id="smok" type="button" data-t="pmOk" hidden>OK</button></div>
+  </div>
 </div></div>
 
 <div class="layout">
@@ -65,7 +123,7 @@
 </section>
 </div>
 </main>
-<script src="/assets/i18n.js?v=1.5.1"></script>
+<script src="/assets/i18n.js?v=1.6.0"></script>
 <script src="/assets/pdf.min.js"></script>
-<script src="/assets/print.js?v=1.5.1"></script>
+<script src="/assets/print.js?v=1.6.0"></script>
 </body></html>

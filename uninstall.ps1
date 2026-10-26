@@ -7,12 +7,12 @@ function Uninstall-SchoolPrinter {
         else { Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -Command `"[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://print.mahanmirzaee.com/uninstall.ps1'))`"" }
         return
     }
-    foreach ($t in 'MacPrint Web', 'MacPrint Inbox', 'MacPrint Convert') {
+    foreach ($t in 'MacPrint Web', 'MacPrint Inbox', 'MacPrint Convert', 'MacPrint Sync', 'MacPrint DNS') {
         Stop-ScheduledTask -TaskName $t -EA SilentlyContinue
         Unregister-ScheduledTask -TaskName $t -Confirm:$false -EA SilentlyContinue
     }
-    Remove-NetFirewallRule -DisplayName 'MacPrint Web' -EA SilentlyContinue
-    Remove-Item "$env:PUBLIC\Desktop\School Printer (Admin).url" -EA SilentlyContinue
+    Remove-NetFirewallRule -DisplayName 'MacPrint Web', 'MacPrint DNS' -EA SilentlyContinue
+    Remove-Item "$env:PUBLIC\Desktop\School Printer (Admin).url", "$env:PUBLIC\Desktop\Start School Printer.lnk", "$env:PUBLIC\Desktop\Stop School Printer.lnk" -EA SilentlyContinue
     Write-Host 'School Printer stopped and removed from startup.' -ForegroundColor Green
     $a = Read-Host 'Also delete C:\ProgramData\MacPrint (program files, settings, print log)? [y/N]'
     if ($a -match '^[yY]') {

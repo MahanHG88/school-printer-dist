@@ -9,8 +9,12 @@
 use strict;
 use warnings;
 use IO::Socket::INET;
+use Socket qw(pack_sockaddr_in);
 use POSIX qw(strftime WNOHANG);
 use Fcntl qw(:flock);
+use IO::Select;
+use Time::HiRes ();
+use MIME::Base64 ();
 
 my $DIR  = $ENV{SP_DIR} || ($^O eq 'darwin' ? '/Library/Application Support/SchoolPrinter' : '/opt/schoolprinter');
 my $PORT = $ENV{SP_PORT} || 8631;
@@ -20,7 +24,7 @@ my $LOG  = "$DIR/log.txt";
 my $UP   = "$DIR/Uploads";
 my $WEB  = "$DIR/web";
 my $MAX  = 50 * 1024 * 1024;
-$ENV{PATH} = '/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin';
+$ENV{PATH} = ($ENV{SP_PATH} ? "$ENV{SP_PATH}:" : '') . '/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin';    # SP_PATH: tests only
 $ENV{HOME} = $DIR;    # LibreOffice needs a writable home
 
 my @BASE   = qw(pdf jpg jpeg png gif bmp tif tiff);
@@ -30,7 +34,7 @@ my %MIME   = (html => 'text/html; charset=utf-8', css => 'text/css; charset=utf-
               woff2 => 'font/woff2');
 
 sub slurp { my $f = shift; open(my $h, '<:raw', $f) or return ''; local $/; my $d = <$h>; close $h; defined $d ? $d : '' }
-sub spit  { my ($f, $d) = @_; open(my $h, '>:raw', "$f.tmp") or return; print $h $d; close $h; rename "$f.tmp", $f }
+sub spit  { my ($f, $d) = @_; open(my $h, '>:raw', "$f.$$.tmp") or return; print $h $d; close $h; rename "$f.$$.tmp", $f }
 my %PAGE = (print => slurp("$WEB/print.html"), admin => slurp("$WEB/admin.html"));
 
 # ---------------------------------------------------------------- helpers
@@ -53,18 +57,22 @@ sub cmd_out {    # like cmd, but only stdout (stderr discarded) - for programs t
 sub which { my $n = shift; for (split /:/, $ENV{PATH}) { return "$_/$n" if -x "$_/$n" } undef }
 my $SOFFICE = which('soffice') || which('libreoffice') || (-x '/Applications/LibreOffice.app/Contents/MacOS/soffice' ? '/Applications/LibreOffice.app/Contents/MacOS/soffice' : undef);
 my $CUPSFILTER = which('cupsfilter');
-sub office_state { $SOFFICE ? 'lo' : 'none' }
-sub types { my @t = @BASE; push @t, 'txt' if $CUPSFILTER || $SOFFICE; push @t, @OFFICE if $SOFFICE; @t }
+sub office_state { $SOFFICE ? 'lo' : conv_peers() ? 'peer' : 'none' }    # peer: converted on another station
+sub types { my $o = office_state(); my @t = @BASE; push @t, 'txt' if $CUPSFILTER || $o ne 'none'; push @t, @OFFICE if $o ne 'none'; @t }
 
-sub printers { my (undef, $o) = cmd('lpstat', '-e'); grep { length } split /\n/, $o }
-sub default_printer { my (undef, $o) = cmd('lpstat', '-d'); return $1 if $o =~ /:\s*(\S.*?)\s*$/m; my @p = printers(); @p ? $p[0] : '' }
+# A "School Printer" queue (added with "Add to this device", on this computer or for another station) prints back into
+# School Printer: choosing it as THE printer made every job come back here and be printed again, every few seconds.
+sub own_queues { my (undef, $o) = cmd('lpstat', '-v'); my %q; while ($o =~ /^device for (\S+):\s*(\S+)/mg) { my ($n, $u) = ($1, $2); $q{$n} = 1 if $u =~ m{:8631/ipp/print} } %q }
+sub printers { my %own = own_queues(); my (undef, $o) = cmd('lpstat', '-e'); grep { length && !$own{$_} } split /\n/, $o }
+sub default_printer { my @p = printers(); my (undef, $o) = cmd('lpstat', '-d'); if ($o =~ /:\s*(\S.*?)\s*$/m) { my $d = $1; return $d if grep { $_ eq $d } @p } @p ? $p[0] : '' }
 sub get_cfg {
-    my %c = (pin => '', open => '1', printer => '', lang => 'fa');
+    my %c = (pin => '', open => '1', printer => '', lang => 'fa', station => '', share => '1', accept => '1', conv => '1', domain => '', domainAt => '0', dns => '1');
     for (split /\n/, slurp($CFG)) { next if /^\s*#/; $c{$1} = $2 if /^\s*(\w+)\s*=\s*(.*?)\s*$/ }
-    $c{printer} = default_printer() unless length $c{printer};
+    if (!length $c{printer}) { $c{printer} = default_printer() }
+    else { my %own = own_queues(); $c{printer} = default_printer() if $own{$c{printer}} }
     return %c;
 }
-sub save_cfg { my %c = @_; spit($CFG, "# School Printer settings (also changeable on the admin page)\nprinter=$c{printer}\npin=$c{pin}\nopen=$c{open}\nlang=$c{lang}\n") }
+sub save_cfg { my %c = @_; spit($CFG, "# School Printer settings (also changeable on the admin page)\n" . join('', map { "$_=$c{$_}\n" } qw(printer pin open lang station share accept conv domain domainAt dns))) }
 sub has_printer { my $n = shift; length $n && grep { $_ eq $n } printers() }
 sub pstatus { my $n = shift; return 'Not found' unless has_printer($n); my (undef, $o) = cmd('lpstat', '-p', $n); $o =~ /disabled/ ? 'Offline' : 'Normal' }
 sub jobs { my $n = shift; return 0 unless length $n; my (undef, $o) = cmd('lpstat', '-o', $n); scalar grep { length } split /\n/, $o }
@@ -174,7 +182,7 @@ sub convert {    # in a forked worker: <id>.<ext> -> <id>.pdf (or <id>.fail)
     spit("$UP/$id.fail", 'conversion failed') unless $ok;
 }
 sub do_print {    # in the request's worker, after the reply: settings -> lp options
-    my ($file, $s, $label) = @_;
+    my ($file, $s, $label, $jid) = @_;
     my %c = get_cfg(); my $pr = $c{printer};
     my @o = ('-d', $pr, '-n', $s->{copies}, '-o', 'collate=true', '-t', "School Printer - " . ($s->{name} || 'document'));
     push @o, '-o', "media=$s->{paper}" if length $s->{paper};
@@ -186,18 +194,635 @@ sub do_print {    # in the request's worker, after the reply: settings -> lp opt
     my $m = { none => 0, narrow => 6.35, normal => 12.7, wide => 25.4 }->{$s->{margins}};
     if ($m) { my $pt = int($m * 72 / 25.4 + 0.5); push @o, '-o', "page-$_=$pt" for qw(left right top bottom) }
     push @o, $s->{scale} eq 'fit' ? ('-o', 'fit-to-page') : ('-o', 'print-scaling=none', '-o', 'scaling=100');
-    my $code = '0';
-    unless ($DRY) { my ($st, $out) = cmd('lp', @o, $file); if ($st) { $out =~ s/\s+/ /g; $code = "lp-$st: $out" } }
+    my ($code, $cups) = ('0', '');
+    unless ($DRY) { my ($st, $out) = cmd('lp', @o, $file); if ($st) { $out =~ s/\s+/ /g; $code = "lp-$st: $out" } elsif ($out =~ /request id is (\S+)/) { $cups = $1 } }
     else { $code = '0 (dry run: lp ' . join(' ', @o) . ')' if $ENV{SP_SHOWLP} }
     logline("$label  copies=$s->{copies}  exit=$code");
+    job_set($jid, $code !~ /^0( |$)/ ? (state => 'failed', err => $code) : $cups ? (state => 'printing', cups => $cups) : (state => 'done')) if $jid;
     if ($ENV{SP_TESTOUT}) { rename $file, "$ENV{SP_TESTOUT}/$label" } else { unlink $file }    # test hook, like watch.ps1
 }
 
 
+# ---------------------------------------------------------------- printing network (up to 50 School Printer computers)
+# Computers running School Printer with the same network password find each other by themselves: a worker scans this
+# computer's local network for port 8631 every minute (GET /sync/hello answers with a group id derived from the
+# password) and asks every station of the same group for its status every few seconds. The print page sends each job
+# to the least busy suitable printer, or to the station the person picked; Word/Excel/PowerPoint files are converted
+# on the computer with the most free power. Every /sync/* request is signed with a key derived from the password;
+# the password itself is never stored. Same protocol as sync.ps1/syncd.ps1 on Windows, so both mix in one network.
+my $SYNC = "$DIR/Sync"; my $STD = "$SYNC/st"; my $JOBS = "$SYNC/jobs"; my $SCANS = "$SYNC/scans"; my $HELD = "$SYNC/held"; my $ALIAS = 'schoolprinter.local';
+my $HAS_SHA = eval { require Digest::SHA; 1 } ? 1 : 0;
+my $PROTO = 1; my $MAXNODES = 50; my $VERSION = '1.6.0'; my $FRESH = 25;
+
+sub rnd_bytes { my $n = shift; my $b = ''; if (open(my $h, '<:raw', '/dev/urandom')) { read($h, $b, $n); close $h } $b .= chr(int rand 256) while length $b < $n; $b }
+sub rnd_hex { unpack('H*', rnd_bytes(shift)) }
+sub node_id { my $f = "$SYNC/node-id"; my $id = slurp($f); $id =~ s/\s+//g; return $id if $id =~ /^[0-9a-f]{32}$/; $id = rnd_hex(16); spit($f, $id); $id }
+sub group { return undef unless $HAS_SHA; my $g = jdec(slurp("$SYNC/group.json")); (ref $g eq 'HASH' && ($g->{key} || '') =~ /^[0-9a-f]{64}$/) ? $g : undef }
+sub derive_group {    # network password -> key + group id. Same maths as Sp-Derive in sync.ps1.
+    my $pw = shift; my $h = Digest::SHA::hmac_sha256('school-printer/1', $pw);
+    $h = Digest::SHA::hmac_sha256($h, $pw) for 1 .. 20000;       # slow on purpose: makes guessing the password costly
+    my $key = unpack('H*', $h);
+    return { key => $key, gid => substr(Digest::SHA::hmac_sha256_hex('group', $key), 0, 16) };
+}
+sub clean_text {    # printable text, at most $max characters (UTF-8 kept as bytes)
+    my ($s, $max) = @_; $s = '' unless defined $s; $s =~ s/[\x00-\x1f\x7f<>"\\]//g; $s =~ s/^\s+|\s+$//g;
+    my $u = $s; if (utf8::decode($u) && length $u > $max) { $u = substr($u, 0, $max); utf8::encode($u); return $u }
+    length $s > $max * 4 ? substr($s, 0, $max) : $s;
+}
+sub station_of { my %c = @_; return $c{station} if length($c{station} // ''); (my $n = $HOSTNAME) =~ s/\.local$//; $n }
+sub my_url { return $ENV{SP_ADDR} if $ENV{SP_ADDR}; my @ip = ipv4s(); @ip ? "http://$ip[0]:$PORT" : "http://$HOSTNAME:$PORT" }
+
+# ---- tiny JSON decoder (objects, arrays, strings, numbers, true/false/null); strings stay UTF-8 bytes
+sub jdec { my $t = shift; return undef unless defined $t && length $t; local $_ = $t; pos($_) = 0; my $v = eval { _jv() }; $v }    # (whitespace is skipped with \s+: Perl refuses two empty /g matches at one place)
+sub _jv {
+    /\G\s+/gc;
+    if (/\G\{/gc) { my %h; /\G\s+/gc; return \%h if /\G\}/gc;
+        while (1) { /\G\s+/gc; my $k = _js(); /\G\s*:/gc or die "json\n"; $h{$k} = _jv(); /\G\s+/gc; next if /\G,/gc; last if /\G\}/gc; die "json\n" }
+        return \%h }
+    if (/\G\[/gc) { my @a; /\G\s+/gc; return \@a if /\G\]/gc;
+        while (1) { push @a, _jv(); /\G\s+/gc; next if /\G,/gc; last if /\G\]/gc; die "json\n" }
+        return \@a }
+    return _js() if substr($_, pos($_) // 0, 1) eq '"';
+    return 1 if /\Gtrue/gc; return 0 if /\Gfalse/gc; return undef if /\Gnull/gc;
+    return 0 + $1 if /\G(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/gc;
+    die "json\n";
+}
+sub _js {
+    /\G"((?:[^"\\]|\\.)*)"/gc or die "json\n"; my $s = $1;
+    $s =~ s{\\(u([0-9a-fA-F]{4})|.)}{ my ($e, $u) = ($1, $2); if (defined $u) { my $c = chr(hex $u); utf8::encode($c); $c } else { { n => "\n", r => "\r", t => "\t", b => "\b", f => "\f" }->{$e} // $e } }ge;
+    $s;
+}
+
+# ---- signed requests between stations
+sub sig { my ($key, $t, $m, $p, $id) = @_; Digest::SHA::hmac_sha256_hex("$t\n$m\n$p\n$id", $key) }
+sub same_text { my ($x, $y) = @_; return 0 unless length $x == length $y; my $d = 0; $d |= ord(substr($x, $_, 1)) ^ ord(substr($y, $_, 1)) for 0 .. length($x) - 1; !$d }
+sub sync_auth {    # -> id of the station that signed this request, or '' (wrong password, old clock, not a station)
+    my ($H, $m, $p) = @_; my $g = group() or return '';
+    my ($id, $t, $s) = map { $H->{$_} || '' } qw(x-sync-node x-sync-time x-sync-sig);
+    return '' unless $id =~ /^[0-9a-f]{32}$/ && $t =~ /^\d{9,11}$/ && $s =~ /^[0-9a-f]{64}$/ && abs(time - $t) <= 300;
+    same_text(sig($g->{key}, $t, $m, $p, $id), $s) ? $id : '';
+}
+sub http {    # (base url, method, path, {headers}, body, timeout s) -> (status, body); status 0 = no answer
+    my ($url, $m, $p, $hd, $body, $to) = @_; $body = '' unless defined $body; $to ||= 5;
+    my ($host, $port) = $url =~ m{^http://([A-Za-z0-9.\-]+):(\d+)$} or return (0, 'bad address');
+    my $s = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port, Proto => 'tcp', Timeout => $to) or return (0, 'unreachable');
+    binmode $s; my $resp = '';
+    my $ok = eval {
+        local $SIG{ALRM} = sub { die "timeout\n" }; alarm($to + int(length($body) / 100_000));
+        print $s "$m $p HTTP/1.0\r\nHost: $host:$port\r\nConnection: close\r\nContent-Length: " . length($body) . "\r\n" .
+                 join('', map { "$_: $hd->{$_}\r\n" } sort keys %{ $hd || {} }) . "\r\n";
+        print $s $body if length $body;
+        while (1) { my $n = sysread($s, my $b, 65536); last unless $n; $resp .= $b; die "big\n" if length $resp > $MAX + 65536 }
+        alarm 0; 1 };
+    alarm 0; close $s;
+    return (0, 'timeout') unless $ok;
+    my ($head, $rb) = split /\r\n\r\n/, $resp, 2;
+    return (0, 'bad reply') unless defined $head && $head =~ m{^HTTP/\d\.\d (\d{3})};
+    my $code = $1; $rb = '' unless defined $rb;
+    if ($head =~ /^Transfer-Encoding:\s*chunked/mi) { my $o = ''; while ($rb =~ s/^([0-9a-fA-F]+)[^\r\n]*\r\n//) { my $n = hex $1; last unless $n; $o .= substr($rb, 0, $n); $rb = substr($rb, $n + 2) } $rb = $o }
+    ($code, $rb);
+}
+sub peer {    # signed request to another station
+    my ($url, $m, $p, $hd, $body, $to) = @_; my $g = group() or return (0, 'no network');
+    my $t = time; my $id = node_id();
+    http($url, $m, $p, { %{ $hd || {} }, 'X-Sync-Node' => $id, 'X-Sync-Time' => $t, 'X-Sync-Sig' => sig($g->{key}, $t, $m, $p, $id) }, $body, $to);
+}
+
+# ---- this station's status (written by the worker every few seconds; what /sync/status answers)
+sub perf {    # (cores, cpu %, free MB, total MB)
+    my ($cores, $load, $free, $total) = (1, 0, 0, 0);
+    if ($^O eq 'darwin') {
+        my (undef, $n) = cmd('sysctl', '-n', 'hw.ncpu'); $cores = $1 if $n =~ /(\d+)/;
+        my (undef, $l) = cmd('sysctl', '-n', 'vm.loadavg'); $load = $1 if $l =~ /([\d.]+)/;
+        my (undef, $m) = cmd('sysctl', '-n', 'hw.memsize'); $total = int($1 / 1048576) if $m =~ /(\d+)/;
+        my (undef, $v) = cmd('vm_stat'); my $pg = $v =~ /page size of (\d+)/ ? $1 : 4096; my $p = 0;
+        $p += $1 while $v =~ /^Pages (?:free|inactive|speculative|purgeable):\s+(\d+)/mg; $free = int($p * $pg / 1048576);
+    } else {
+        my $ci = slurp('/proc/cpuinfo'); my $n = () = $ci =~ /^processor\s*:/mg; $cores = $n if $n;
+        $load = $1 if slurp('/proc/loadavg') =~ /^([\d.]+)/;
+        my $mi = slurp('/proc/meminfo'); $total = int($1 / 1024) if $mi =~ /^MemTotal:\s+(\d+)/m; $free = int($1 / 1024) if $mi =~ /^MemAvailable:\s+(\d+)/m;
+    }
+    my $cpu = int($load / ($cores || 1) * 100 + .5); $cpu = 100 if $cpu > 100;
+    ($cores, $cpu, $free, $total);
+}
+sub cups_queue {    # (jobs, sheets) waiting on the printer; sheets of School Printer jobs are known, others count 1
+    my $pr = shift; return (0, 0) unless length $pr;
+    my (undef, $o) = cmd('lpstat', '-o', $pr); my %sheets = job_sheets_by_cups(); my ($n, $sh) = (0, 0);
+    for (split /\n/, $o) { next unless /^(\S+)/; $n++; $sh += $sheets{$1} || 1 }
+    ($n, $sh);
+}
+sub conv_busy { opendir(my $d, $UP) or return 0; my $n = grep { /^lo-/ } readdir $d; closedir $d; $n }
+sub self_status {
+    my %cf = get_cfg(); my $pr = $cf{printer}; my $cp = caps($pr); my $ps = pstatus($pr);
+    my ($jobs, $sheets) = cups_queue($pr); my ($cores, $cpu, $free, $total) = perf(); my $open = $cf{open} ne '0';
+    return { app => 'school-printer', proto => N($PROTO), id => node_id(), name => $HOSTNAME, station => station_of(%cf), version => $VERSION,
+        open => B($open), ready => B($open && $ps eq 'Normal'), accept => B($cf{accept} ne '0'), printer => $pr, pstatus => $ps,
+        jobs => N($jobs), queue => N($sheets), color => $cp->{color}, duplex => $cp->{duplex}, papers => $cp->{papers},
+        conv => { ok => B($SOFFICE ? 1 : 0), kind => ($SOFFICE ? 'lo' : 'none'), busy => N(conv_busy()), share => B($cf{conv} ne '0') },
+        cores => N($cores), cpu => N($cpu), memFree => N($free), memTotal => N($total), url => my_url(), at => N(time),
+        bw => N(bw_now()), up => N(uptime_blocks()), domain => $cf{domain}, domainAt => N($cf{domainAt} || 0), hasPrinter => B(length $pr && $ps ne 'Not found'), scanners => scanner_list(), lead => leader()->{id} };
+}
+sub self_cached { my $s = jdec(slurp("$SYNC/self.json")); (ref $s eq 'HASH' && time - ($s->{at} || 0) < 30) ? $s : jdec(json(self_status())) }
+
+# ---- the other stations: found by the scan (peers.json), status from the last poll (st/<id>.json)
+sub peers_list { my $p = jdec(slurp("$SYNC/peers.json")); ref $p eq 'ARRAY' ? [grep { ref $_ eq 'HASH' && ($_->{id} || '') =~ /^[0-9a-f]{32}$/ } @$p] : [] }
+sub stations {    # [{id, url, station, s (status), online, age, err}]
+    my @out;
+    for my $x (@{ peers_list() }) {
+        my $st = jdec(slurp("$STD/$x->{id}.json")); $st = {} unless ref $st eq 'HASH';
+        my $e = jdec(slurp("$STD/$x->{id}.err")); $e = {} unless ref $e eq 'HASH';
+        my $at = $st->{at} || 0; my $age = $at ? time - $at : 1e9;
+        my $s = ref $st->{s} eq 'HASH' ? $st->{s} : {};
+        push @out, { id => $x->{id}, url => $x->{url}, station => $s->{station} || $x->{station} || '', s => $s,
+                     online => ($age <= $FRESH && ($e->{at} || 0) <= $at) ? 1 : 0, age => $age, err => (($e->{at} || 0) > $at ? $e->{err} || '' : '') };
+    }
+    @out;
+}
+sub subnets {    # [ip, prefix] for each LAN address of this computer
+    my @r;
+    if ($^O eq 'darwin') {
+        my (undef, $o) = cmd('ifconfig');
+        while ($o =~ /inet (\d+\.\d+\.\d+\.\d+) netmask 0x([0-9a-fA-F]{8})/g) { my ($ip, $nm) = ($1, $2); next if $ip =~ /^(127|169\.254)\./; push @r, [$ip, unpack('%32b*', pack('H8', $nm))] }
+    } else {
+        my (undef, $o) = cmd('ip', '-4', '-o', 'addr', 'show', 'scope', 'global');
+        while ($o =~ /^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)\/(\d+)/mg) { push @r, [$2, $3] unless $1 =~ /^(docker|br-|veth|virbr|tun|wg|tailscale|zt|lxc|cni|flannel)/ }
+    }
+    @r;
+}
+sub scan_targets {    # every address of this computer's networks (each at most a /22 = 1022 addresses), port 8631
+    return map { [split /:/] } split /,/, $ENV{SP_SCAN} if $ENV{SP_SCAN};    # tests: "127.0.0.1:8701,127.0.0.1:8702"
+    my (%seen, @t);
+    for my $sn (subnets()) {
+        my ($ip, $pre) = @$sn; $pre = 22 if $pre < 22; next if $pre > 30;
+        my $n = unpack('N', pack('C4', split /\./, $ip)); my $net = $n & ((0xFFFFFFFF << (32 - $pre)) & 0xFFFFFFFF);
+        for my $k (1 .. 2 ** (32 - $pre) - 2) { my $ad = join('.', unpack('C4', pack('N', $net + $k))); next if $ad eq $ip || $seen{$ad}++; push @t, [$ad, $PORT] }
+    }
+    @t;
+}
+sub scan_open {    # connect to many addresses at once (200 at a time) -> the ones that accept
+    my @t = @_; my @open;
+    while (my @batch = splice(@t, 0, 200)) {
+        my %s; my $sel = IO::Select->new;
+        for my $x (@batch) { my $k = IO::Socket::INET->new(PeerAddr => $x->[0], PeerPort => $x->[1], Proto => 'tcp', Blocking => 0) or next; $s{fileno $k} = [$k, $x]; $sel->add($k) }
+        my $end = Time::HiRes::time() + 1.5;
+        while ($sel->count && (my $left = $end - Time::HiRes::time()) > 0) {
+            for my $w ($sel->can_write($left)) { $sel->remove($w); push @open, $s{fileno $w}[1] if $w->connected; close $w }
+        }
+        close $_->[0] for values %s;
+    }
+    @open;
+}
+sub scan {    # (in its own process) -> peers.json: stations with the same password; others.json: School Printers with another one
+    my $g = group() or return; my $me = node_id(); my %old = map { $_->{id} => $_ } @{ peers_list() };
+    my (%found, $others);
+    for my $x (scan_open(scan_targets())) {
+        my ($c, $b) = http("http://$x->[0]:$x->[1]", 'GET', '/sync/hello', {}, '', 2); next unless $c == 200;
+        my $h = jdec($b); next unless ref $h eq 'HASH' && ($h->{app} || '') eq 'school-printer' && ($h->{id} || '') =~ /^[0-9a-f]{32}$/ && $h->{id} ne $me;
+        if (($h->{gid} || '') eq $g->{gid}) { $found{$h->{id}} = { id => $h->{id}, url => "http://$x->[0]:$x->[1]", station => clean_text($h->{station}, 40), seen => time } }
+        else { $others++ }
+    }
+    for my $id (keys %old) { $found{$id} ||= $old{$id} if time - ($old{$id}{seen} || 0) < 600 }    # missed one scan: keep 10 minutes
+    my @p = sort { ($b->{seen} || 0) <=> ($a->{seen} || 0) } values %found; @p = @p[0 .. $MAXNODES - 2] if @p > $MAXNODES - 1;
+    $_->{seen} = N($_->{seen}) for @p;
+    spit("$SYNC/peers.json", json(\@p)); spit("$SYNC/others.json", json({ n => N($others || 0), at => N(time) }));
+    for my $x (grep { !$old{$_->{id}} } @p) { peer($x->{url}, 'POST', '/sync/announce', {}, '', 2) }    # new here: they look again at once
+}
+sub poll_peers {    # ask every station for its status at once; each answer -> st/<id>.json
+    my @p = @{ peers_list() }; my %kids;
+    for my $x (@p) {
+        my $pid = fork; next unless defined $pid;
+        if (!$pid) {
+            my ($c, $b) = peer($x->{url}, 'GET', '/sync/status', {}, '', 3); my $s = $c == 200 ? jdec($b) : undef;
+            if (ref $s eq 'HASH' && ($s->{id} || '') eq $x->{id}) { spit("$STD/$x->{id}.json", '{"at":' . time . ',"s":' . $b . '}') }
+            else { spit("$STD/$x->{id}.err", json({ at => N(time), err => $c == 401 ? 'PASSWORD' : $c == 0 ? 'UNREACHABLE' : "HTTP $c" })) }
+            exit 0;
+        }
+        $kids{$pid} = 1;
+    }
+    my $end = Time::HiRes::time() + 5;
+    while (%kids && Time::HiRes::time() < $end) { for (keys %kids) { delete $kids{$_} if waitpid($_, WNOHANG) } Time::HiRes::sleep(0.05) if %kids }
+    for (keys %kids) { kill 'KILL', $_; waitpid($_, 0) }
+}
+
+# ---- jobs: Sync/jobs/<jid>.json lets the print page follow its job ("waiting at X", "printing at X")
+sub job_get { my $id = shift; return undef unless $id =~ /^[0-9a-f]{16}$/; my $j = jdec(slurp("$JOBS/$id.json")); ref $j eq 'HASH' ? $j : undef }
+sub job_set {
+    my ($id, %kv) = @_; return unless defined $id && $id =~ /^[0-9a-f]{16}$/;
+    open(my $l, '>>', "$JOBS/.lock") or return; flock($l, LOCK_EX);
+    my $j = job_get($id) || { jid => $id, at => time }; $j->{$_} = $kv{$_} for keys %kv;    # plain numbers: N() below, once
+    $j->{$_} = N($j->{$_} || 0) for grep { defined $j->{$_} } qw(at ahead sheets lost errSince); $j->{moved} = B($j->{moved}) if defined $j->{moved};
+    spit("$JOBS/$id.json", json($j)); close $l;
+}
+sub job_sheets_by_cups { my %h; opendir(my $d, $JOBS) or return %h; for (readdir $d) { next unless /^([0-9a-f]{16})\.json$/; my $j = job_get($1) or next; $h{$j->{cups}} = $j->{sheets} || 1 if $j->{cups} } closedir $d; %h }
+sub job_refresh {    # follow jobs on other stations; printing -> done when CUPS has finished; move jobs off failing stations and printers
+    opendir(my $d, $JOBS) or return; my @all = map { job_get(substr($_, 0, 16)) || () } grep { /^[0-9a-f]{16}\.json$/ } readdir $d; closedir $d;
+    my $me = node_id(); my ($q, $pst); my %st = map { $_->{id} => $_ } stations();
+    for my $j (@all) {
+        my $jid = $j->{jid}; my $held = -e "$HELD/$jid.json";
+        if ($j->{state} =~ /^(done|failed)$/) { unhold($jid) if $j->{state} eq 'done'; next }
+        next if time - ($j->{at} || 0) > 1800;
+        if ($j->{rjid}) {    # on another station
+            my $x = $st{ $j->{sid} };
+            if (!$x || !$x->{online}) {    # that station went quiet: give it 20 seconds, then print elsewhere
+                if (!$j->{lost}) { job_set($jid, lost => time) } elsif (time - $j->{lost} >= 20 && $held) { reroute($j, 'STATION_LOST') }
+                next;
+            }
+            job_set($jid, lost => 0) if $j->{lost};
+            my ($c, $b) = peer($j->{url} || $x->{url}, 'GET', "/sync/job/$j->{rjid}", {}, '', 4); next unless $c == 200;
+            my $r = jdec($b); next unless ref $r eq 'HASH' && ($r->{state} || '') =~ /^(queued|printing|done|failed)$/;
+            if ($r->{state} eq 'failed' && $held) { reroute($j, ($r->{err} || '') eq 'PRINTER_ERROR' ? 'PRINTER_ERROR' : 'FAILED'); next }
+            job_set($jid, state => $r->{state}, ahead => $r->{ahead} || 0, err => $r->{err} || '') if $r->{state} ne $j->{state} || ($r->{ahead} || 0) != ($j->{ahead} || 0);
+            unhold($jid) if $r->{state} eq 'done';
+            next;
+        }
+        next unless ($j->{sid} || '') eq $me && $j->{state} eq 'printing' && $j->{cups};
+        unless ($q) { my (undef, $o) = cmd('lpstat', '-o'); $q = [map { /^(\S+)/ ? $1 : () } split /\n/, $o] }
+        my ($pos) = grep { $q->[$_] eq $j->{cups} } 0 .. $#$q;
+        if (!defined $pos) { job_set($jid, state => 'done', ahead => 0); unhold($jid); next }
+        (my $pq = $j->{cups}) =~ s/-\d+$//;
+        unless (defined $pst) { my (undef, $o) = cmd('lpstat', '-l', '-p', $pq); $pst = $o }
+        if ($pst =~ /disabled|not responding|offline|out of paper|media.?empty|jam|unable to|waiting for printer|stopped/i) {    # stuck: 45 s, then cancel here and print elsewhere
+            if (!$j->{errSince}) { job_set($jid, errSince => time) }
+            elsif (time - $j->{errSince} >= 45) { cmd('cancel', $j->{cups}) unless $DRY; $held ? reroute($j, 'PRINTER_ERROR') : job_set($jid, state => 'failed', err => 'PRINTER_ERROR') }
+            next;
+        }
+        job_set($jid, errSince => 0) if $j->{errSince};
+        my $ahead = grep { $_ < $pos && $q->[$_] =~ /^\Q$pq\E-\d+$/ } 0 .. $#$q; job_set($jid, ahead => $ahead) if $ahead != ($j->{ahead} || 0);
+    }
+    opendir(my $sd, $SCANS) or return;    # scans whose process died
+    for (readdir $sd) { next unless /^([0-9a-f]{16})\.json$/; my $k = scan_get($1) or next; scan_set($1, state => 'failed', err => 'SCAN_FAILED') if $k->{state} =~ /^(waiting|scanning)$/ && $k->{pid} && !kill(0, $k->{pid}) }
+    closedir $sd;
+}
+sub pending_sheets { my %h; opendir(my $d, $JOBS) or return %h; for (readdir $d) { next unless /^([0-9a-f]{16})\.json$/; my $j = job_get($1) or next; $h{$j->{sid}} += $j->{sheets} || 1 if $j->{state} eq 'sending' } closedir $d; %h }
+sub cleanup_sync {
+    for my $f (glob("$SCANS/*")) { unlink $f if -f $f && time - (stat $f)[9] > 1800 }    # scans: 30 minutes
+    for my $dir ($JOBS, $STD) { opendir(my $d, $dir) or next; for (readdir $d) { my $f = "$dir/$_"; unlink $f if -f $f && !/^\./ && time - (stat $f)[9] > 86400 } closedir $d }
+    my %ids = map { $_->{id} => 1 } @{ peers_list() }; opendir(my $d, $STD) or return;
+    for (readdir $d) { unlink "$STD/$_" if /^([0-9a-f]{32})\.(json|err)$/ && !$ids{$1} } closedir $d;
+}
+
+# ---- choosing where a job prints / where a file is converted
+sub paper_fits { my ($s, $w, $h) = @_; return 1 unless $w && ref $s->{papers} eq 'ARRAY' && @{ $s->{papers} };
+                 my ($a1, $b1) = sort { $a <=> $b } ($w, $h); scalar grep { abs($_->{w} - $a1) < 2 && abs($_->{h} - $b1) < 2 } @{ $s->{papers} } }
+sub pick_station {    # ($want = 'auto' | station id, {color, duplex, pw, ph}) -> (station to send to | undef = print here, error)
+    my ($want, $j) = @_; my $me = node_id();
+    return (undef, '') if !$want || $want eq $me || !group();
+    my %cf = get_cfg();
+    my @on = grep { $_->{online} && $_->{s}{ready} && $_->{s}{accept} } stations();
+    if ($want ne 'auto') { my ($x) = grep { $_->{id} eq $want } @on; return $x ? ($x, '') : (undef, 'STATION_OFFLINE') }
+    return (undef, '') if $cf{share} eq '0';
+    my $self = self_cached(); my %pend = pending_sheets();
+    my @c; push @c, { here => 1, s => $self, load => ($self->{queue} || 0) + ($pend{$me} || 0) } if $self->{ready};
+    push @c, map { { x => $_, s => $_->{s}, load => ($_->{s}{queue} || 0) + ($pend{$_->{id}} || 0) } } @on;
+    return (undef, '') unless @c;
+    my @fit = grep { (!$j->{color} || $_->{s}{color}) && (!$j->{duplex} || $_->{s}{duplex}) && paper_fits($_->{s}, $j->{pw}, $j->{ph}) } @c;
+    @fit = @c unless @fit;
+    my $best = $fit[0]; for (@fit) { $best = $_ if $_->{load} < $best->{load} }    # ties: this station (first)
+    $best->{here} ? (undef, '') : ($best->{x}, '');
+}
+sub net_info {    # the admin page's "Printing network" card
+    my %cf = @_; my $g = group(); my $me = self_cached(); my $o = jdec(slurp("$SYNC/others.json")) || {};
+    my $row = sub { my ($x, $s, $here) = @_; { id => $x->{id}, station => $x->{station}, url => $x->{url} || '', here => B($here), online => B($x->{online}),
+        age => N($x->{age} < 1e8 ? $x->{age} : -1), err => $x->{err} || '', printer => $s->{printer} || '', pstatus => $s->{pstatus} || '', ready => B($s->{ready}),
+        accept => B($s->{accept}), queue => N($s->{queue} || 0), jobs => N($s->{jobs} || 0), cpu => N($s->{cpu} || 0), cores => N($s->{cores} || 0),
+        memFree => N($s->{memFree} || 0), memTotal => N($s->{memTotal} || 0), conv => ($s->{conv} || {})->{kind} || 'none',
+        convBusy => N(($s->{conv} || {})->{busy} || 0), color => B($s->{color}), duplex => B($s->{duplex}) } };
+    my @rows = ($row->({ id => node_id(), station => station_of(%cf), url => my_url(), online => 1, age => 0 }, $me, 1));
+    push @rows, map { $row->($_, $_->{s}, 0) } sort { $b->{online} <=> $a->{online} || lc $a->{station} cmp lc $b->{station} } stations() if $g;
+    my $ls = (stat "$SYNC/others.json")[9];
+    return { ok => B($HAS_SHA), joined => B($g), gid => $g ? $g->{gid} : '', station => station_of(%cf), share => B($cf{share} ne '0'),
+             accept => B($cf{accept} ne '0'), conv => B($cf{conv} ne '0'), others => N($g ? $o->{n} || 0 : 0), lastScan => N($ls && $g ? time - $ls : -1),
+             max => N($MAXNODES), stations => \@rows, main => leader()->{id}, alias => "http://$ALIAS:$PORT", domain => $cf{domain}, dns => B($cf{dns} ne '0'),
+             dnsState => do { my $x = jdec(slurp("$SYNC/dns.json")); ref $x eq 'HASH' && time - ($x->{at} || 0) < 30 ? $x->{state} : 'off' } };
+}
+sub net_caps {    # this printer's paper sizes; colour / two-sided when any connected printer has them (the job goes there)
+    my $cp = caps(shift); return $cp unless group();
+    my @on = grep { $_->{online} && $_->{s}{ready} } stations();
+    return { %$cp, color => B(${ $cp->{color} } || grep { $_->{s}{color} } @on), duplex => B(${ $cp->{duplex} } || grep { $_->{s}{duplex} } @on) };
+}
+sub cscore { my $s = shift; my $c = $s->{conv} || {}; my $v = ($s->{cores} || 1) * (100 - ($s->{cpu} || 0)) / 100 - 1.5 * ($c->{busy} || 0);
+             $v -= 2 if ($s->{memFree} || 0) > 0 && $s->{memFree} < 800; $v }
+sub conv_peers { my %cf = get_cfg(); return () if $cf{conv} eq '0' || !group(); grep { $_->{online} && $_->{s}{conv} && $_->{s}{conv}{ok} && $_->{s}{conv}{share} } stations() }
+sub pick_converter {    # -> station to convert on, or undef = here
+    my @p = conv_peers() or return undef;
+    my $best = $p[0]; for (@p) { $best = $_ if cscore($_->{s}) > cscore($best->{s}) }
+    return $best unless $SOFFICE;
+    my $mine = cscore(self_cached()); my $margin = abs($mine) * 0.3; $margin = 0.75 if $margin < 0.75;
+    cscore($best->{s}) > $mine + $margin ? $best : undef;
+}
+sub remote_convert {    # Office file -> another station converts it -> <id>.pdf here (or convert here if that fails)
+    my ($x, $id, $ext) = @_; alarm 0;
+    my ($c, $b) = peer($x->{url}, 'POST', '/sync/convert', { 'X-Ext' => $ext }, slurp("$UP/$id.$ext"), 60);
+    my $r = $c == 200 ? jdec($b) : undef;
+    if (ref $r eq 'HASH' && ($r->{rid} || '') =~ /^[0-9a-f]{32}$/) {
+        my $end = time + 150;
+        while (time < $end) {
+            Time::HiRes::sleep(0.8);
+            my ($c2, $b2) = peer($x->{url}, 'GET', "/sync/converted/$r->{rid}", {}, '', 30);
+            if ($c2 == 200 && substr($b2, 0, 4) eq '%PDF') { spit("$UP/$id.pdf", $b2); return }
+            last if $c2 == 410 || $c2 == 404 || $c2 == 401;
+        }
+    }
+    convert($id, $ext);
+}
+sub norm_settings {    # job settings from the print page or another station -> clean settings for this printer
+    my ($g, $cp) = @_;    # $g: code ref name -> raw value
+    my %s = map { $_ => $g->($_) } qw(copies pages paper orientation color duplex margins scale nup land pw ph name);
+    $s{$_} = '' for grep { !defined $s{$_} } keys %s;
+    my %ok = (orientation => qr/^(auto|portrait|landscape)$/, color => qr/^(color|gray)$/, duplex => qr/^(off|long|short)$/,
+              margins => qr/^(none|narrow|normal|wide)$/, scale => qr/^(fit|actual)$/, nup => qr/^[124]$/, pages => qr/^[0-9,\-\s]{0,200}$/);
+    for (keys %ok) { return undef unless $s{$_} =~ $ok{$_} }
+    $s{copies} = ($s{copies} =~ /^\d+$/ && $s{copies} >= 1) ? ($s{copies} > 20 ? 20 : $s{copies}) : 1;
+    $s{land} = $s{orientation} eq 'landscape' ? 1 : $s{orientation} eq 'portrait' ? 0 : ($s{land} ? 1 : 0);
+    my ($p) = grep { $_->{n} eq $s{paper} } @{ $cp->{papers} };
+    if (!$p && $s{pw} =~ /^[\d.]+$/ && $s{ph} =~ /^[\d.]+$/) { my ($a1, $b1) = sort { $a <=> $b } ($s{pw}, $s{ph}); ($p) = grep { abs(${ $_->{w} } - $a1) < 2 && abs(${ $_->{h} } - $b1) < 2 } @{ $cp->{papers} } }
+    $s{paper} = $p ? $p->{n} : $cp->{def};
+    $s{color} = 'gray' unless ${ $cp->{color} }; $s{duplex} = 'off' unless ${ $cp->{duplex} };
+    $s{name} = clean_text($s{name}, 120);
+    \%s;
+}
+sub hold {    # keep a copy of a job (document + settings) until it has printed, to move it if a station or printer fails
+    my ($jid, $file, $s, $label) = @_; my ($ext) = $file =~ /\.(\w+)$/; return unless $ext;
+    spit("$HELD/$jid.$ext", slurp($file)); spit("$HELD/$jid.json", json({ %$s, ext => $ext, label => $label }));
+}
+sub unhold { unlink glob("$HELD/$_[0].*") }
+sub forward_job {    # (in a worker process) hand a job to another station; the network worker follows it there
+    my ($x, $file, $s, $label, $jid, $picked) = @_; alarm 0;
+    (my $ext = $file) =~ s/.*\.//;
+    my %m = map { $_ => $s->{$_} } grep { defined $s->{$_} } qw(copies pages paper orientation color duplex margins scale nup land pw ph name sheets from);
+    $m{ext} = $ext;
+    my $hdr = { 'X-Job' => MIME::Base64::encode_base64(json(\%m), '') };
+    my $data = slurp($file); my $until = time + ($picked ? 120 : 6); my ($c, $b);    # a picked printer: keep trying for 2 minutes
+    while (1) { ($c, $b) = peer($x->{url}, 'POST', '/sync/job', $hdr, $data, 60); last if $c == 200 || ($c >= 400 && $c != 503) || time >= $until; sleep 3 }
+    my $r = $c == 200 ? jdec($b) : undef;
+    if (ref $r eq 'HASH' && ($r->{jid} || '') =~ /^[0-9a-f]{16}$/) {
+        unlink $file; job_set($jid, state => 'queued', ahead => $r->{ahead} || 0, rjid => $r->{jid}, url => $x->{url});
+        logline("$label  copies=$s->{copies}  exit=sent:" . ($x->{station} || $x->{id}));
+        return;
+    }
+    unlink $file; my $j = job_get($jid); reroute($j, 'NOT_TAKEN') if $j;    # that station did not take it: the next best printer
+}
+sub reroute {    # print a job again from its held copy: on the best other printer, else here; else it failed
+    my ($j, $why) = @_; my $jid = $j->{jid};
+    my $h = jdec(slurp("$HELD/$jid.json")); my $doc = ref $h eq 'HASH' ? "$HELD/$jid.$h->{ext}" : '';
+    return job_set($jid, state => 'failed', err => $why) unless $doc && -e $doc;
+    my %tried = map { $_ => 1 } grep { length } (split(/,/, $j->{tried} || ''), $j->{sid} || '');
+    my $me = node_id(); my $self = self_cached(); my %pend = pending_sheets(); my @c;
+    push @c, { here => 1, s => $self, load => ($self->{queue} || 0) + ($pend{$me} || 0) } if $self->{ready} && !$tried{$me};
+    push @c, map { { x => $_, s => $_->{s}, load => ($_->{s}{queue} || 0) + ($pend{$_->{id}} || 0) } } grep { $_->{online} && $_->{s}{ready} && $_->{s}{accept} && !$tried{$_->{id}} } stations() if group();
+    my @fit = grep { ($h->{color} ne 'color' || $_->{s}{color}) && ($h->{duplex} eq 'off' || $_->{s}{duplex}) && paper_fits($_->{s}, $h->{pw}, $h->{ph}) } @c; @fit = @c unless @fit;
+    my $tr = join(',', sort keys %tried);
+    unless (@fit) { unhold($jid); return job_set($jid, state => 'failed', err => $why, tried => $tr) }
+    my $best = $fit[0]; for (@fit) { $best = $_ if $_->{load} < $best->{load} }
+    my %cf = get_cfg(); my $copy = "$UP/job-r$jid-$h->{label}"; spit($copy, slurp($doc));
+    job_set($jid, state => $best->{here} ? 'queued' : 'sending', station => $best->{here} ? station_of(%cf) : $best->{x}{station}, sid => $best->{here} ? $me : $best->{x}{id},
+            moved => 1, why => $why, tried => $tr, rjid => '', url => '', at => time, lost => 0, errSince => 0);
+    my $pid = fork; return if !defined $pid || $pid;
+    $SIG{CHLD} = 'DEFAULT';
+    if ($best->{here}) { my $cp = caps($cf{printer}); $h->{color} = 'gray' unless ${ $cp->{color} }; $h->{duplex} = 'off' unless ${ $cp->{duplex} }; do_print($copy, $h, $h->{label}, $jid) }
+    else { forward_job($best->{x}, $copy, $h, $h->{label}, $jid, 0) }
+    exit 0;
+}
+
+# ---- the worker: status, scan, polls (a separate process, restarted by the server if it stops)
+sub worker {
+    $0 = 'schoolprinter-network'; $SIG{CHLD} = 'DEFAULT'; $SIG{ALRM} = 'DEFAULT'; my ($last_scan, $scan_pid, $last_det, $last_bw) = (0, 0, 0, 0);
+    $SIG{TERM} = sub { alias_off(); exit 0 };
+    while (1) {
+        my $t0 = Time::HiRes::time();
+        eval { uptime_tick() };
+        if (time - $last_det >= 60) { $last_det = time; eval { detect_scanners() } }
+        eval { spit("$SYNC/self.json", json(self_status())) };
+        my ($lid) = eval { elect() }; $lid ||= node_id();
+        if ($lid eq node_id() && group()) { alias_on() } else { alias_off() }
+        if (group() && time - $last_bw >= 300) { $last_bw = (eval { measure_bw() } ? time : time - 280) }    # failed: again in 20 s
+        if (group()) {
+            if ($scan_pid && waitpid($scan_pid, WNOHANG)) { $scan_pid = 0 }
+            if (!$scan_pid && (time - $last_scan >= 60 || -e "$SYNC/scan-now")) {
+                unlink "$SYNC/scan-now"; $last_scan = time;
+                my $pid = fork; if (defined $pid && !$pid) { eval { scan() }; exit 0 } $scan_pid = $pid || 0;
+            }
+            eval { poll_peers() }; eval { adopt_domain() };
+        }
+        eval { job_refresh() }; eval { cleanup_sync() } if int($t0) % 60 < 3;
+        my $n = @{ peers_list() }; my $iv = $n > 24 ? 6 : $n > 10 ? 4 : 2.5;
+        my $left = $iv - (Time::HiRes::time() - $t0); Time::HiRes::sleep($left) if $left > 0;
+    }
+}
+
+# ---------------------------------------------------------------- one address for everyone: the main station
+# Every station measures how fast it can fetch 1 MB from another station (bw, Mbit/s) and reports its free power.
+# All stations compute the same choice from the same statuses: the main station serves the address everyone uses,
+# http://schoolprinter.local:8631 (mDNS), and every other station's print page forwards there. A main station keeps
+# the job until another one is clearly better (25 %), so the address does not flip back and forth.
+sub lead_score { my $s = shift; my $bw = $s->{bw} || 0; log(1 + $bw) / log(2) * 2 + ($s->{cores} || 1) * (100 - ($s->{cpu} || 0)) / 100 + (($s->{memFree} || 0) > 8192 ? 8192 : ($s->{memFree} || 0)) / 2048 }
+sub elect {    # -> (id, url) of the main station
+    my $me = self_cached(); my @c = ({ id => node_id(), url => my_url(), s => $me });
+    push @c, map { { id => $_->{id}, url => $_->{url}, s => $_->{s} } } grep { $_->{online} } stations() if group();
+    $_->{score} = lead_score($_->{s}) for @c;
+    # equal (to half a point) -> most running time (5-minute blocks) -> a random pick every station makes the same way
+    my $gid = (group() || {})->{gid} || '';
+    $_->{rank} = int($_->{score} * 2 + .5), $_->{up} = $_->{s}{up} || 0, $_->{lot} = Digest::SHA::sha1_hex("$gid/$_->{id}") for @c;
+    my ($best) = sort { $b->{rank} <=> $a->{rank} || $b->{up} <=> $a->{up} || $a->{lot} cmp $b->{lot} } @c;
+    # keep the main station most stations already follow, while it is online and not clearly worse than the best;
+    # everyone sees the same statuses, so a fresh network settles on the same best station within one round
+    my %votes; $votes{ $_->{s}{lead} || '' }++ for @c; my %by = map { $_->{id} => $_ } @c;
+    my ($keep) = sort { $votes{$b->{id}} <=> $votes{$a->{id}} || $b->{rank} <=> $a->{rank} || $b->{up} <=> $a->{up} || $a->{lot} cmp $b->{lot} } grep { $votes{$_->{id}} && $votes{$_->{id}} >= 2 } values %by;
+    my $l = ($keep && $keep->{score} >= $best->{score} * 0.75) ? $keep : $best;
+    my $cur = jdec(slurp("$SYNC/leader.json"));
+    spit("$SYNC/leader.json", json({ id => $l->{id}, url => $l->{url} })) unless ref $cur eq 'HASH' && ($cur->{id} || '') eq $l->{id} && ($cur->{url} || '') eq $l->{url};
+    ($l->{id}, $l->{url});
+}
+sub leader { my $l = jdec(slurp("$SYNC/leader.json")); ref $l eq 'HASH' && $l->{id} ? $l : { id => node_id(), url => my_url() } }
+my $ALIAS_PID = 0;
+sub alias_on {    # publish schoolprinter.local -> this computer (child process lives while we are the main station)
+    return if $ALIAS_PID && kill 0, $ALIAS_PID;
+    my ($ip) = my_url() =~ m{//([\d.]+):}; return unless $ip;
+    my @cmd = $^O eq 'darwin' ? ('dns-sd', '-P', 'School Printer (web)', '_http._tcp', 'local', $PORT, $ALIAS, $ip, 'path=/')
+            : which('avahi-publish') ? ('avahi-publish', '-a', '-R', $ALIAS, $ip) : ();
+    return unless @cmd && which($cmd[0]);
+    my $pid = fork; if (defined $pid && !$pid) { open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null'); exec @cmd; exit 0 }
+    $ALIAS_PID = $pid || 0;
+}
+sub alias_off { if ($ALIAS_PID) { kill 'TERM', $ALIAS_PID; waitpid($ALIAS_PID, 0); $ALIAS_PID = 0 } }
+sub measure_bw {    # fetch 1 MB from a random online station; keep the last 5 results (median = bw in status)
+    my @on = grep { $_->{online} } stations(); return 0 unless @on;
+    my $x = $on[int rand @on]; my $t = Time::HiRes::time(); my ($c, $b) = peer($x->{url}, 'GET', '/sync/probe', {}, '', 10);
+    return 0 unless $c == 200 && length $b >= 1_000_000;
+    my $mbps = length($b) * 8 / 1e6 / ((Time::HiRes::time() - $t) || 0.001);
+    my $h = jdec(slurp("$SYNC/bw.json")); my @v = ref $h eq 'ARRAY' ? @$h : (); push @v, $mbps; @v = @v[-5 .. -1] if @v > 5;
+    spit("$SYNC/bw.json", json([map { N(sprintf '%.1f', $_) } @v])); 1;
+}
+sub uptime_tick {    # running time in 5-minute blocks, kept across restarts (Sync/uptime.json)
+    my $u = jdec(slurp("$SYNC/uptime.json")); $u = { blocks => 0, part => 0, last => 0 } unless ref $u eq 'HASH';
+    my $now = time; my $d = $u->{last} ? $now - $u->{last} : 0; $d = 0 if $d < 0 || $d > 120;    # stopped in between: not counted
+    $u->{part} += $d; while ($u->{part} >= 300) { $u->{part} -= 300; $u->{blocks}++ } $u->{last} = $now;
+    spit("$SYNC/uptime.json", json({ blocks => N($u->{blocks}), part => N($u->{part}), last => N($now) }));
+}
+sub uptime_blocks { my $u = jdec(slurp("$SYNC/uptime.json")); ref $u eq 'HASH' ? $u->{blocks} || 0 : 0 }
+sub bw_now { my $h = jdec(slurp("$SYNC/bw.json")); return 0 unless ref $h eq 'ARRAY' && @$h; my @s = sort { $a <=> $b } @$h; $s[$#s / 2] }
+my $PROBE = join '', map { pack('N', $_ * 2654435761 % 4294967296) } 1 .. 262144;    # 1 MB, generated once
+
+# ---------------------------------------------------------------- the school address (e.g. print.school) on the school's DNS
+# Set once on any station's admin page; the newest setting spreads to every station. Each station then answers that
+# name with the main station's address on UDP 53 (all other names are passed on to this computer's own DNS server),
+# so the router can hand the stations out as DNS servers. The print page is served on port 80 too, when it is free.
+sub adopt_domain {
+    my %cf = get_cfg(); my ($best) = sort { ($b->{s}{domainAt} || 0) <=> ($a->{s}{domainAt} || 0) } grep { $_->{online} && defined $_->{s}{domainAt} } stations();
+    return unless $best && ($best->{s}{domainAt} || 0) > ($cf{domainAt} || 0) && ($best->{s}{domain} // '') =~ /^([a-z0-9.-]{3,253})?$/;
+    $cf{domain} = $best->{s}{domain} // ''; $cf{domainAt} = $best->{s}{domainAt}; save_cfg(%cf);
+}
+sub upstreams { my %mine = map { $_ => 1 } ipv4s(); grep { !$mine{$_} && !/^0\./ } slurp('/etc/resolv.conf') =~ /^\s*nameserver\s+(\d+\.\d+\.\d+\.\d+)/mg }
+sub dns_server {    # (own process) UDP 53 on this computer's network address
+    $0 = 'schoolprinter-dns'; $SIG{CHLD} = 'DEFAULT'; my ($srv, $out, $ans, $dom) = (undef, undef, undef, ''); my $bound = ''; my %pend; my @ups; my $next = int rand 65536;
+    my $say = sub { spit("$SYNC/dns.json", json({ state => $_[0], err => $_[1] || '', at => N(time) })) };
+    my $check = 0;
+    while (1) {
+        if (time - $check >= 5) {
+            $check = time; my %cf = get_cfg(); $dom = lc $cf{domain};
+            if (!length $dom || $cf{dns} eq '0') { close $srv if $srv; close $out if $out; ($srv, $out) = (); $say->('off'); sleep 5; next }
+            my ($ip) = my_url() =~ m{//([\d.]+):};
+            if (!$srv || $bound ne ($ip || '')) {
+                close $srv if $srv; close $out if $out;
+                $srv = IO::Socket::INET->new(LocalAddr => $ip || '0.0.0.0', LocalPort => $ENV{SP_DNSPORT} || 53, Proto => 'udp', ReuseAddr => 1);
+                $out = IO::Socket::INET->new(Proto => 'udp');
+                unless ($srv && $out) { $say->('busy', "$!"); ($srv, $out) = (); sleep 60; next }
+                $bound = $ip || '';
+            }
+            @ups = upstreams(); $say->('on');
+            my $l = leader(); my ($lip) = ($l->{url} || '') =~ m{//([\d.]+):};
+            if ($l->{id} ne node_id() && !grep { $_->{id} eq $l->{id} && $_->{online} } stations()) { ($lip) = my_url() =~ m{//([\d.]+):} }
+            $ans = $lip ? pack('C4', split /\./, $lip) : undef;
+            delete $pend{$_} for grep { time - $pend{$_}{t} > 5 } keys %pend;
+        }
+        my $sel = IO::Select->new($srv, $out);
+        for my $sock ($sel->can_read(1)) {
+            my $from = $sock->recv(my $b, 4096); next unless defined $from && length $b >= 12;
+            if ($sock == $srv) {    # a question from a device
+                my ($i, @l) = (12); while ($i < length $b) { my $n = ord substr($b, $i, 1); last unless $n; last if $n > 63; push @l, lc substr($b, $i + 1, $n); $i += 1 + $n }
+                my $name = join '.', @l; my $qtype = unpack('n', substr($b, $i + 1, 2) // "\0\0"); my $qend = $i + 5;
+                if ($ans && ($name eq $dom || $name =~ /\.\Q$dom\E$/)) {
+                    my $isA = $qtype == 1 || $qtype == 255;
+                    my $r = substr($b, 0, 2) . chr(0x84 | (ord(substr($b, 2, 1)) & 1)) . chr(0x80) . pack('nnnn', 1, $isA ? 1 : 0, 0, 0) . substr($b, 12, $qend - 12);
+                    $r .= pack('nnnNn', 0xC00C, 1, 1, 30, 4) . $ans if $isA;
+                    $srv->send($r, 0, $from); next;
+                }
+                next unless @ups;
+                $next = ($next + 1) % 65536; $pend{$next} = { to => $from, id => substr($b, 0, 2), t => time };
+                substr($b, 0, 2) = pack('n', $next); $out->send($b, 0, pack_sockaddr_in(53, Socket::inet_aton($ups[0])));
+            } else {    # the answer: back to the device that asked
+                my $p = delete $pend{ unpack('n', substr($b, 0, 2)) } or next;
+                substr($b, 0, 2) = $p->{id}; $srv->send($b, 0, $p->{to});
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------- scanning (SANE: scanimage)
+# Scanners attached to any station are listed on the print page. Unlike printing, nothing is balanced: the person
+# picks the scanner, because the paper is lying in it. The scan is made on that station, then handed back through
+# the station the person is using, and offered as a download (kept 30 minutes).
+my $SCANIMAGE = which('scanimage');
+sub scanner_list {    # [{id, name, dpis, modes, sources}] - cached by the worker (scanimage -L is slow)
+    my $l = jdec(slurp("$SYNC/scanners.json")); ref $l eq 'ARRAY' ? $l : [] }
+sub detect_scanners {
+    return spit("$SYNC/scanners.json", '[]') unless $SCANIMAGE;
+    my (undef, $o) = cmd($SCANIMAGE, '-L'); my @l;
+    while ($o =~ /^device [`'](.+?)' is an? (.+)$/mg) {
+        my ($id, $name) = ($1, $2);         my (undef, $a) = cmd($SCANIMAGE, '-d', $id, '-A');
+        my @dpi; if ($a =~ /--resolution\s+(\S+)/) { my $r = $1; if ($r =~ /^(\d+)\.\.(\d+)/) { my ($lo, $hi) = ($1, $2); @dpi = grep { $_ >= $lo && $_ <= $hi } 75, 100, 150, 200, 300, 400, 600, 1200 } else { @dpi = $r =~ /(\d+)/g } }
+        @dpi = (75, 150, 300, 600) unless @dpi; @dpi = grep { $_ >= 50 && $_ <= 2400 } @dpi;
+        my @modes = ('color', 'gray'); if ($a =~ /--mode\s+(\S+)/) { my $m = $1; @modes = (); push @modes, 'color' if $m =~ /Color/i; push @modes, 'gray' if $m =~ /Gray/i; @modes = ('gray') unless @modes }
+        my @src = ('flatbed'); if ($a =~ /--source\s+(\S+)/) { my $s = $1; @src = (); push @src, 'flatbed' if $s =~ /Flatbed|Normal/i; push @src, 'feeder' if $s =~ /ADF|Feeder|Automatic/i; @src = ('flatbed') unless @src }
+        push @l, { id => $id, name => clean_text($name, 60), dpis => [map { N($_) } @dpi], modes => \@modes, sources => \@src, srcnames => [$a =~ /--source\s+(\S+)/ ? split(/\|/, (split /\s/, $1)[0]) : ()] };
+    }
+    spit("$SYNC/scanners.json", json(\@l));
+}
+sub scan_get { my $id = shift; return undef unless $id =~ /^[0-9a-f]{16}$/; my $j = jdec(slurp("$SCANS/$id.json")); ref $j eq 'HASH' ? $j : undef }
+sub scan_set { my ($id, %kv) = @_; my $j = scan_get($id) || { sid => $id, at => time }; $j->{$_} = $kv{$_} for keys %kv; $j->{$_} = N($j->{$_} || 0) for qw(at size pages dpi pid); spit("$SCANS/$id.json", json($j)) }
+sub jpeg_size { my $d = shift; my $i = 2; while ($i + 9 < length $d) { my ($m, $t) = unpack('CC', substr($d, $i, 2)); return () unless $m == 0xFF;
+    my $len = unpack('n', substr($d, $i + 2, 2)); if ($t >= 0xC0 && $t <= 0xCF && !grep { $_ == $t } 0xC4, 0xC8, 0xCC) { my ($h, $w) = unpack('nn', substr($d, $i + 5, 4)); return ($w, $h, ord substr($d, $i + 9, 1)) } $i += 2 + $len } () }
+sub jpegs_pdf {    # one page per JPEG, page size = picture size at the scan resolution. Same as Jpegs-Pdf in syncd.ps1.
+    my ($imgs, $dpi) = @_; my @o; my @kids; my $n = @$imgs;
+    for my $k (0 .. $n - 1) {
+        my ($w, $h, $c) = jpeg_size($imgs->[$k]) or next; my ($pw, $ph) = map { sprintf '%.2f', $_ * 72 / $dpi } $w, $h; my ($po, $co, $io) = (3 + 3 * $k, 4 + 3 * $k, 5 + 3 * $k);
+        push @kids, "$po 0 R";
+        $o[$po] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 $pw $ph] /Resources << /XObject << /Im$k $io 0 R >> >> /Contents $co 0 R >>";
+        my $cs = "q $pw 0 0 $ph 0 0 cm /Im$k Do Q"; $o[$co] = "<< /Length " . length($cs) . " >>\nstream\n$cs\nendstream";
+        $o[$io] = "<< /Type /XObject /Subtype /Image /Width $w /Height $h /ColorSpace /" . ($c == 1 ? 'DeviceGray' : $c == 4 ? 'DeviceCMYK' : 'DeviceRGB') .
+                  " /BitsPerComponent 8 /Filter /DCTDecode /Length " . length($imgs->[$k]) . " >>\nstream\n" . $imgs->[$k] . "\nendstream";
+    }
+    $o[1] = '<< /Type /Catalog /Pages 2 0 R >>'; $o[2] = '<< /Type /Pages /Kids [' . join(' ', @kids) . '] /Count ' . scalar(@kids) . ' >>';
+    my $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"; my @off;
+    for my $i (1 .. $#o) { next unless defined $o[$i]; $off[$i] = length $pdf; $pdf .= "$i 0 obj\n$o[$i]\nendobj\n" }
+    my $x = length $pdf; $pdf .= "xref\n0 " . @o . "\n0000000000 65535 f \n";
+    $pdf .= defined $off[$_] ? sprintf("%010d 00000 n \n", $off[$_]) : "0000000000 65535 f \n" for 1 .. $#o;
+    $pdf . "trailer\n<< /Size " . @o . " /Root 1 0 R >>\nstartxref\n$x\n%%EOF\n";
+}
+sub scan_local {    # (in a worker process) make the scan; -> Sync/scans/<sid>.<ext>
+    my ($sid, $q) = @_; alarm 0;
+    my ($dev) = grep { $_->{id} eq $q->{device} } @{ scanner_list() };
+    return scan_set($sid, state => 'failed', err => 'NO_SCANNER') unless $dev && $SCANIMAGE;
+    open(my $lk, '>>', "$SYNC/scan-" . unpack('H*', substr(Digest::SHA::sha1($dev->{id}), 0, 6)) . '.lock') or return scan_set($sid, state => 'failed', err => 'BUSY');
+    scan_set($sid, state => 'waiting') unless flock($lk, LOCK_EX | LOCK_NB); flock($lk, LOCK_EX);    # one scan at a time per scanner
+    scan_set($sid, state => 'scanning', pid => $$);
+    my @a = ('-d', $dev->{id}, '--resolution', $q->{dpi}, '--mode', $q->{mode} eq 'gray' ? 'Gray' : 'Color');
+    if ($q->{source} eq 'feeder') { my ($s) = grep { /ADF|Feeder|Automatic/i } @{ $dev->{srcnames} || [] }; push @a, '--source', $s || 'ADF' }
+    elsif (@{ $dev->{srcnames} || [] }) { my ($s) = grep { /Flatbed|Normal/i } @{ $dev->{srcnames} }; push @a, '--source', $s if $s }
+    my $fmt = $q->{format}; my @pages; my $tmp = "$SCANS/$sid-work"; mkdir $tmp;
+    if ($fmt eq 'png' && $q->{source} ne 'feeder') { my ($st, $o) = cmd_out($SCANIMAGE, @a, '--format=png'); @pages = ($o) if $st == 0 && substr($o, 0, 4) eq "\x89PNG" }
+    elsif ($q->{source} eq 'feeder') { cmd($SCANIMAGE, @a, '--format=jpeg', "--batch=$tmp/p%03d.jpg"); @pages = map { slurp($_) } sort glob("$tmp/p*.jpg") }
+    else { my ($st, $o) = cmd_out($SCANIMAGE, @a, '--format=jpeg'); @pages = ($o) if $st == 0 && substr($o, 0, 2) eq "\xFF\xD8" }
+    unlink glob("$tmp/*"); rmdir $tmp; close $lk;
+    return scan_set($sid, state => 'failed', err => $q->{source} eq 'feeder' ? 'FEEDER_EMPTY' : 'SCAN_FAILED') unless @pages;
+    my ($ext, $data) = $fmt eq 'png' ? ('png', $pages[0]) : $fmt eq 'jpg' ? ('jpg', $pages[0]) : ('pdf', jpegs_pdf(\@pages, $q->{dpi}));
+    spit("$SCANS/$sid.$ext", $data);
+    scan_set($sid, state => 'ready', ext => $ext, size => length $data, pages => scalar @pages);
+}
+sub scan_norm {    # request -> clean scan settings for a known scanner, or an error code
+    my ($g, $list) = @_; my %q = map { $_ => $g->($_) // '' } qw(station device dpi mode source format);
+    my ($dev) = grep { $_->{id} eq $q{device} } @$list; return (undef, 'NO_SCANNER') unless $dev;
+    my @d = map { 0 + $_ } @{ $dev->{dpis} }; $q{dpi} = 300 unless $q{dpi} =~ /^\d+$/;
+    my ($near) = sort { abs($a - $q{dpi}) <=> abs($b - $q{dpi}) } @d; $q{dpi} = $near || 300;
+    $q{mode} = 'color' unless grep { $_ eq $q{mode} } @{ $dev->{modes} }; $q{mode} = $dev->{modes}[0] unless grep { $_ eq $q{mode} } @{ $dev->{modes} };
+    $q{source} = 'flatbed' unless grep { $_ eq $q{source} } @{ $dev->{sources} };
+    $q{format} = 'pdf' unless $q{format} =~ /^(pdf|jpg|png)$/; $q{format} = 'pdf' if $q{source} eq 'feeder';
+    (\%q, '');
+}
+sub scan_remote {    # (in a worker process) ask the scanner's station to scan, then fetch the file here
+    my ($sid, $x, $q) = @_; alarm 0;
+    my ($c, $b) = peer($x->{url}, 'POST', '/sync/scan', {}, json({ map { $_ => $q->{$_} } qw(device dpi mode source format) }), 10);
+    my $r = $c == 200 ? jdec($b) : undef;
+    return scan_set($sid, state => 'failed', err => $c == 0 ? 'STATION_OFFLINE' : (ref $r eq 'HASH' && $r->{error}) || 'SCAN_FAILED') unless ref $r eq 'HASH' && ($r->{sid} || '') =~ /^[0-9a-f]{16}$/;
+    my $end = time + 900; my $lost = 0; scan_set($sid, pid => $$);
+    while (time < $end) {
+        Time::HiRes::sleep(1);
+        my ($c2, $b2) = peer($x->{url}, 'GET', "/sync/scan/$r->{sid}", {}, '', 5);
+        if ($c2 != 200) { my ($y) = grep { $_->{id} eq $x->{id} } stations(); $lost ||= time if $c2 == 0 || ($y && !$y->{online});    # station went quiet mid-scan
+                          return scan_set($sid, state => 'failed', err => 'STATION_LOST') if $lost && time - $lost >= 20; next }
+        $lost = 0;
+        my $s = jdec($b2); next unless ref $s eq 'HASH';
+        if ($s->{state} eq 'ready') {
+            my ($c3, $d) = peer($x->{url}, 'GET', "/sync/scan/$r->{sid}/file", {}, '', 120);
+            return scan_set($sid, state => 'failed', err => 'SCAN_FAILED') unless $c3 == 200 && length $d;
+            spit("$SCANS/$sid.$s->{ext}", $d); return scan_set($sid, state => 'ready', ext => $s->{ext}, size => length $d, pages => $s->{pages} || 1);
+        }
+        return scan_set($sid, state => 'failed', err => $s->{err} || 'SCAN_FAILED') if $s->{state} eq 'failed';
+        scan_set($sid, state => $s->{state}) if $s->{state} =~ /^(waiting|scanning)$/;
+    }
+    scan_set($sid, state => 'failed', err => 'SCAN_FAILED');
+}
+sub scanners_all {    # every scanner in the network, for the print page
+    my %cf = get_cfg(); my @l = map { { station => node_id(), stationName => station_of(%cf), here => B(1), online => B(1), %$_ } } @{ scanner_list() };
+    if (group()) { for my $x (grep { $_->{online} } stations()) { push @l, map { { station => $x->{id}, stationName => $x->{station}, here => B(0), online => B(1), %$_ } } @{ $x->{s}{scanners} || [] } } }
+    delete $_->{srcnames} for @l;
+    \@l;
+}
+
 # ---------------------------------------------------------------- IPP printer ("Add to this device")
 # Devices add ipp://<this computer>:8631/ipp/print with their own driverless driver (macOS/Linux IPP Everywhere,
 # Windows IPP Class Driver) and print PDF/JPEG/PNG from any app; jobs go through do_print like the web page's.
-my $IPP_JOB = time % 100000;
+my $IPP_JOB = time % 100000;    # per request process: the job id is made unique below
 sub read_chunked {
     my ($c, $buf) = @_; my $out = '';
     while (1) {
@@ -306,6 +931,10 @@ sub ipp_handle {
     if ($op == 0x0004) { return $open ? ipp_reply($c, $r, 0) : ipp_reply($c, $r, 0x0506, ia_attr(0x41, 'status-message', 'Printing is closed right now.')) }
     if ($op == 0x0002) {
         return ipp_reply($c, $r, 0x0506, ia_attr(0x41, 'status-message', 'Printing is closed right now.')) unless $open;
+        if (ia($r, 'job-name', '') =~ /^School Printer - /) {    # our own job coming back: the printer is a School Printer queue
+            my $stamp = "$SYNC/loop.log"; if (time - ((stat $stamp)[9] || 0) > 60) { spit($stamp, ''); logline('print-loop  copies=0  exit=loop: a School Printer queue is set as the printer - choose the real printer on the admin page') }
+            return ipp_reply($c, $r, 0x0404, ia_attr(0x41, 'status-message', 'Print loop: this job came from School Printer itself.'));
+        }
         my $d = $r->{data}; my $ext = substr($d, 0, 4) eq '%PDF' ? 'pdf' : substr($d, 0, 4) eq "\x89PNG" ? 'png' : substr($d, 0, 2) eq "\xFF\xD8" ? 'jpg' : '';
         return ipp_reply($c, $r, 0x040A, ia_attr(0x41, 'status-message', 'Send PDF, JPEG or PNG.')) unless $ext;
         my $copies = ia($r, 'copies', 1); $copies = 1 if $copies < 1; $copies = 20 if $copies > 20;
@@ -321,9 +950,13 @@ sub ipp_handle {
         if ($wmm) { my ($a, $b) = sort { $a <=> $b } ($wmm, $hmm); for my $p (@{ $cp->{papers} }) { $s{paper} = $p->{n} if abs(${ $p->{w} } - $a) < 2 && abs(${ $p->{h} } - $b) < 2 } }
         (my $from = $peer) =~ s/[^0-9A-Fa-f.]/_/g;
         my $label = strftime('%Y%m%d-%H%M%S', localtime) . '-' . int(rand(99999)) . "-from$from-c$copies.$ext";
-        spit("$UP/job-$label", $d); my $jid = ++$IPP_JOB;
+        spit("$UP/job-$label", $d); my $jid = ((time % 100000) * 100 + $$ % 100) % 2147483647;
+        my ($pp) = grep { $_->{n} eq $s{paper} } @{ $cp->{papers} }; @s{qw(pw ph sheets from)} = ($pp ? ${ $pp->{w} } : '', $pp ? ${ $pp->{h} } : '', $copies, $from);
+        $s{orientation} = $s{orient_auto} ? 'auto' : $s{land} ? 'landscape' : 'portrait';
+        my ($tgt) = pick_station('auto', { color => $s{color} eq 'color', duplex => $s{duplex} ne 'off', pw => $s{pw}, ph => $s{ph} });
+        my $tj = rnd_hex(8); job_set($tj, state => $tgt ? 'sending' : 'queued', sid => $tgt ? $tgt->{id} : node_id(), sheets => $copies);
         ipp_reply($c, $r, 0, chr(0x02) . ia_attr(0x21, 'job-id', $jid) . ia_attr(0x45, 'job-uri', "$uri/$jid") . ia_attr(0x23, 'job-state', 9) . ia_attr(0x44, 'job-state-reasons', 'job-completed-successfully'));
-        close $c; do_print("$UP/job-$label", \%s, $label); return;
+        close $c; hold($tj, "$UP/job-$label", \%s, $label); if ($tgt) { forward_job($tgt, "$UP/job-$label", \%s, $label, $tj, 0) } else { do_print("$UP/job-$label", \%s, $label, $tj) } return;
     }
     if ($op == 0x0009) { my $j = ia($r, 'job-id', 0); return ipp_reply($c, $r, 0, chr(0x02) . ia_attr(0x21, 'job-id', $j) . ia_attr(0x45, 'job-uri', "$uri/$j") . ia_attr(0x23, 'job-state', 9) . ia_attr(0x44, 'job-state-reasons', 'job-completed-successfully')) }
     return ipp_reply($c, $r, 0) if $op == 0x000A || $op == 0x0008;
@@ -421,24 +1054,143 @@ sub handle {
         return ipp_handle($c, $body, $peer, $hostport, \%H);
     }
 
+    # ---- printing network
+    if ($m eq 'GET' && $path eq '/sync/hello') {    # public: lets other stations find this one (gid says which network)
+        my %cf = get_cfg(); my $g = group();
+        return jreply($c, 200, { app => 'school-printer', proto => N($PROTO), id => node_id(), station => station_of(%cf), gid => $g ? $g->{gid} : '' });
+    }
+    if ($path =~ m{^/sync/}) {
+        my $from = sync_auth(\%H, $m, $path) or return jreply($c, 401, { error => 'SIGNATURE', time => N(time) });
+        if ($m eq 'POST' && $path eq '/sync/announce') { spit("$SYNC/scan-now", '') unless grep { $_->{id} eq $from } @{ peers_list() }; return jreply($c, 200, { ok => B(1) }) }
+        if ($m eq 'GET' && $path eq '/sync/probe') { return reply($c, 200, 'application/octet-stream', $PROBE) }
+        if ($m eq 'POST' && $path eq '/sync/scan') {
+            return jreply($c, 400, { error => 'Bad settings.' }) if $len > 65536; my $body = read_body($c, $len, $rest); return unless defined $body;
+            my $j = jdec($body) || {}; my ($q, $err) = scan_norm(sub { $j->{$_[0]} }, scanner_list()); return jreply($c, 404, { error => $err }) unless $q;
+            my $sid = rnd_hex(8); scan_set($sid, state => 'waiting'); jreply($c, 200, { sid => $sid }); close $c; scan_local($sid, $q); return;
+        }
+        if ($m eq 'GET' && $path =~ m{^/sync/scan/([0-9a-f]{16})(/file)?$}) {
+            my ($sid, $file) = ($1, $2); my $j = scan_get($sid) or return jreply($c, 404, { error => 'GONE' });
+            return jreply($c, 200, { state => $j->{state}, err => $j->{err} || '', ext => $j->{ext} || '', pages => N($j->{pages} || 0) }) unless $file;
+            my $d = slurp("$SCANS/$sid.$j->{ext}"); unlink "$SCANS/$sid.$j->{ext}", "$SCANS/$sid.json"; return reply($c, 200, 'application/octet-stream', $d);
+        }
+        if ($m eq 'GET' && $path eq '/sync/status') { return reply($c, 200, 'application/json; charset=utf-8', json(self_cached())) }
+        if ($m eq 'POST' && $path eq '/sync/job') {
+            my %cf = get_cfg();
+            return jreply($c, 403, { error => 'NOT_ACCEPTING' }) if $cf{accept} eq '0' || $cf{open} eq '0';
+            return jreply($c, 413, { error => 'File is bigger than 50 MB.' }) if $len > $MAX;
+            my $mj = jdec(MIME::Base64::decode_base64($H{'x-job'} || '')); return jreply($c, 400, { error => 'Bad settings.' }) unless ref $mj eq 'HASH';
+            my $ext = $mj->{ext} || ''; return jreply($c, 415, { error => "This type of file can't be printed." }) unless $ext =~ /^(pdf|png|jpg|gif)$/;
+            my $cp = caps($cf{printer}); my $s = norm_settings(sub { $mj->{$_[0]} }, $cp) or return jreply($c, 400, { error => 'Bad settings.' });
+            (my $src = $mj->{from} || 'x') =~ s/[^0-9A-Fa-f.]/_/g; my ($sx) = grep { $_->{id} eq $from } stations(); (my $via = ($sx ? $sx->{station} : '') || 'station') =~ s/[^A-Za-z0-9_]+/_/g;
+            my $label = strftime('%Y%m%d-%H%M%S', localtime) . '-' . int(rand(99999)) . "-from$src-via" . substr($via, 0, 24) . "-c$s->{copies}.$ext";
+            open(my $fh, '>:raw', "$UP/job-$label") or return jreply($c, 500, { error => 'Cannot save the file.' });
+            my $ok = read_body($c, $len, $rest, $fh); close $fh; unless ($ok) { unlink "$UP/job-$label"; return }
+            unless (magic_ok("$UP/job-$label", $ext)) { unlink "$UP/job-$label"; return jreply($c, 415, { error => "This type of file can't be printed." }) }
+            my $jid = rnd_hex(8); my ($jobs) = cups_queue($cf{printer});
+            job_set($jid, state => 'queued', station => station_of(%cf), sid => node_id(), sheets => ($mj->{sheets} || 1) =~ /^(\d+)$/ ? $1 : 1);
+            jreply($c, 200, { ok => B(1), jid => $jid, ahead => N($jobs) }); close $c;
+            do_print("$UP/job-$label", $s, $label, $jid); return;
+        }
+        if ($m eq 'GET' && $path =~ m{^/sync/job/([0-9a-f]{16})$}) {
+            my $j = job_get($1) or return jreply($c, 404, { error => 'GONE' });
+            return jreply($c, 200, { state => $j->{state}, ahead => N($j->{ahead} || 0), err => $j->{err} || '' });
+        }
+        if ($m eq 'POST' && $path eq '/sync/convert') {
+            my %cf = get_cfg(); my $ext = lc($H{'x-ext'} || '');
+            return jreply($c, 503, { error => 'NO_CONVERTER' }) unless $SOFFICE && $cf{conv} ne '0';
+            return jreply($c, 415, { error => "This type of file can't be printed." }) unless grep { $_ eq $ext } @OFFICE, 'txt';
+            return jreply($c, 413, { error => 'File is bigger than 50 MB.' }) if $len > $MAX;
+            my $rid = rnd_hex(16); open(my $fh, '>:raw', "$UP/$rid.$ext") or return jreply($c, 500, { error => 'Cannot save the file.' });
+            my $ok = read_body($c, $len, $rest, $fh); close $fh; unless ($ok) { unlink "$UP/$rid.$ext"; return }
+            unless (magic_ok("$UP/$rid.$ext", $ext)) { unlink "$UP/$rid.$ext"; return jreply($c, 415, { error => "This type of file can't be printed." }) }
+            jreply($c, 200, { rid => $rid }); close $c; alarm 170; convert($rid, $ext); return;
+        }
+        if ($m eq 'GET' && $path =~ m{^/sync/converted/([0-9a-f]{32})$}) {
+            my $rid = $1;
+            if (-e "$UP/$rid.pdf") { my $d = slurp("$UP/$rid.pdf"); unlink glob("$UP/$rid.*"); return reply($c, 200, 'application/pdf', $d) }
+            if (-e "$UP/$rid.fail") { unlink glob("$UP/$rid.*"); return jreply($c, 410, { error => 'FAILED' }) }
+            return glob("$UP/$rid.*") ? jreply($c, 202, { state => 'converting' }) : jreply($c, 404, { error => 'GONE' });
+        }
+        return jreply($c, 404, { error => 'Not found' });
+    }
+    if ($m eq 'GET' && $path eq '/stations') {    # public: the stations a person can pick on the print page
+        my %cf = get_cfg(); my $me = self_cached();
+        my @l = ({ id => node_id(), station => station_of(%cf), printer => $cf{printer}, here => B(1), online => B(1), ready => B($me->{ready}), url => my_url(),
+                   queue => N($me->{queue} || 0), jobs => N($me->{jobs} || 0), color => B($me->{color}), duplex => B($me->{duplex}) });
+        if (group()) {
+            for my $x (sort { lc $a->{station} cmp lc $b->{station} } stations()) {
+                push @l, { id => $x->{id}, station => $x->{station}, printer => $x->{s}{printer} || '', here => B(0), online => B($x->{online}), url => $x->{url},
+                           ready => B($x->{online} && $x->{s}{ready} && $x->{s}{accept}), queue => N($x->{s}{queue} || 0), jobs => N($x->{s}{jobs} || 0),
+                           color => B($x->{s}{color}), duplex => B($x->{s}{duplex}) };
+            }
+        }
+        return jreply($c, 200, { here => node_id(), auto => B(group() && $cf{share} ne '0'), list => \@l });
+    }
+    if ($m eq 'GET' && $path eq '/scanners') { return jreply($c, 200, { list => scanners_all() }) }
+    if ($m eq 'POST' && $path eq '/scan') {
+        my %cf = get_cfg();
+        return jreply($c, 503, { error => 'Printing is closed right now.' }) if $cf{open} eq '0';
+        return jreply($c, 403, { error => 'Wrong PIN.' }) if length $cf{pin} && ($H{'x-pin'} || '') ne $cf{pin};
+        return jreply($c, 400, { error => 'Bad settings.' }) if $len > 65536; my $body = read_body($c, $len, $rest); return unless defined $body;
+        my $want = jget($body, 'station') // ''; my $all = scanners_all();
+        my ($q, $err) = scan_norm(sub { jget($body, $_[0]) }, [grep { $_->{station} eq $want } @$all]); return jreply($c, 404, { error => $err }) unless $q;
+        my $sid = rnd_hex(8); my ($dev) = grep { $_->{station} eq $want && $_->{id} eq $q->{device} } @$all;
+        scan_set($sid, state => 'waiting', station => $dev->{stationName}, name => $dev->{name}, dpi => $q->{dpi});
+        jreply($c, 200, { sid => $sid, station => $dev->{stationName} }); close $c;
+        if ($want eq node_id()) { scan_local($sid, $q) } else { my ($x) = grep { $_->{id} eq $want } stations(); $x ? scan_remote($sid, $x, $q) : scan_set($sid, state => 'failed', err => 'STATION_OFFLINE') }
+        return;
+    }
+    if ($m eq 'GET' && $path =~ m{^/scan/([0-9a-f]{16})(/file)?$}) {
+        my ($sid, $file) = ($1, $2); my $j = scan_get($sid) or return jreply($c, 200, { state => 'gone' });
+        return jreply($c, 200, { state => $j->{state}, err => $j->{err} || '', ext => $j->{ext} || '', size => N($j->{size} || 0), pages => N($j->{pages} || 0), station => $j->{station} || '' }) unless $file;
+        return jreply($c, 404, { error => 'GONE' }) unless $j->{state} eq 'ready' && -e "$SCANS/$sid.$j->{ext}";
+        my $name = 'scan-' . strftime('%Y%m%d-%H%M%S', localtime($j->{at} || time)) . ".$j->{ext}"; my $d = slurp("$SCANS/$sid.$j->{ext}");
+        print $c "HTTP/1.1 200 OK\r\nContent-Type: " . ($MIME{$j->{ext}} || 'application/octet-stream') . "\r\nContent-Length: " . length($d) .
+                 "\r\nContent-Disposition: attachment; filename=\"$name\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n$d";
+        return;
+    }
+    if ($m eq 'GET' && $path =~ m{^/job/([0-9a-f]{16})$}) {    # public: the print page follows its job
+        my $j = job_get($1) or return jreply($c, 200, { state => 'gone' });
+        return jreply($c, 200, { state => $j->{state}, station => $j->{station} || '', ahead => N($j->{ahead} || 0), moved => B($j->{moved}), why => $j->{why} || '', err => $j->{err} || '' });
+    }
+
     if ($path =~ m{^/admin}) {    # admin: this computer only; X-Admin stops other web pages posting here
         return jreply($c, 403, { error => 'The admin page only works on the printer computer.' }) unless $local;
         return reply($c, 200, $MIME{html}, $PAGE{admin}) if $m eq 'GET' && $path eq '/admin';
         return jreply($c, 403, { error => 'Forbidden' }) unless ($H{'x-admin'} || '') eq '1';
         my %cf = get_cfg(); my $pr = $cf{printer};
         if ($m eq 'GET' && $path eq '/admin/info') {
-            return jreply($c, 200, { urls => [map {"http://$_:$PORT"} ipv4s()], name => "http://$HOSTNAME:$PORT", open => B($cf{open} ne '0'),
+            my $lu = group() ? leader()->{url} : ''; my @u = map {"http://$_:$PORT"} ipv4s(); @u = ($lu) if $lu && $lu ne my_url();
+            unshift @u, "http://$ALIAS:$PORT" if group(); unshift @u, "http://$cf{domain}" if group() && length $cf{domain};
+            return jreply($c, 200, { urls => \@u, name => "http://$HOSTNAME:$PORT", open => B($cf{open} ne '0'),
                 pin => $cf{pin}, lang => $cf{lang}, printer => $pr, printers => [printers()], pstatus => pstatus($pr), waiting => N(jobs($pr)),
-                jobs => N(jobs($pr)), log => recent(), office => office_state() });
+                jobs => N(jobs($pr)), log => recent(), office => office_state(), net => net_info(%cf) });
         }
         return jreply($c, 404, { error => 'Not found' }) unless $m eq 'POST' && $len <= 65536;
         my $body = read_body($c, $len, $rest); return unless defined $body;
+        if ($path eq '/admin/scan') { spit("$SYNC/scan-now", ''); return jreply($c, 200, { ok => B(1) }) }
         if ($path eq '/admin/set') {
             my ($o, $lg, $pin, $p) = map { jget($body, $_) } qw(open lang pin printer);
+            my ($stn, $pw) = map { jget($body, $_) } qw(station password);
+            for ($stn, $pw) { utf8::encode($_) if defined && utf8::is_utf8($_) }
+            if (defined $stn) { $stn = clean_text($stn, 40); return jreply($c, 400, { error => 'STATION_EMPTY' }) unless length $stn; $cf{station} = $stn }
+            for my $k (qw(share accept conv dns)) { my $v = jget($body, $k); $cf{$k} = $v ? '1' : '0' if defined $v }
+            my $dm = jget($body, 'domain');
+            if (defined $dm) { $dm = lc $dm; $dm =~ s{^https?://}{}; $dm =~ s{/.*$}{}; $dm =~ s/^\s+|\s+$//g;
+                return jreply($c, 400, { error => 'DOMAIN_FORMAT' }) if length $dm && $dm !~ /^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/;
+                $cf{domain} = $dm; $cf{domainAt} = time }
+            if (defined $pw) {
+                return jreply($c, 400, { error => 'NO_SHA' }) unless $HAS_SHA;
+                my $u = $pw; utf8::decode($u);
+                return jreply($c, 400, { error => 'PW_SHORT' }) if length $pw && length $u < 8;
+                unlink "$SYNC/peers.json", glob("$STD/*");
+                if (length $pw) { my $g = derive_group($pw); spit("$SYNC/group.json", json($g)); spit("$SYNC/scan-now", '') } else { unlink "$SYNC/group.json" }
+            }
             $cf{open} = $o ? '1' : '0' if defined $o;
             if (defined $lg) { return jreply($c, 400, { error => 'Unknown language.' }) unless $lg =~ /^(fa|en)$/; $cf{lang} = $lg }
             if (defined $pin) { return jreply($c, 400, { error => 'PIN: letters and numbers only, up to 20.' }) unless $pin =~ /^[A-Za-z0-9]{0,20}$/; $cf{pin} = $pin }
-            if (defined $p) { return jreply($c, 400, { error => 'That printer does not exist.' }) unless has_printer($p); $cf{printer} = $p }
+            if (defined $p) { my %own = own_queues(); return jreply($c, 400, { error => 'SELF_QUEUE' }) if $own{$p};
+                              return jreply($c, 400, { error => 'That printer does not exist.' }) unless has_printer($p); $cf{printer} = $p }
             save_cfg(%cf); return jreply($c, 200, { ok => B(1) });
         }
         if ($path eq '/admin/clear') { my $j = jobs($pr); cmd('cancel', '-a', $pr) if !$DRY && length $pr; return jreply($c, 200, { removed => N($j) }) }
@@ -452,11 +1204,16 @@ sub handle {
         return jreply($c, 404, { error => 'Not found' });
     }
 
-    return reply($c, 200, $MIME{html}, $PAGE{print}) if $m eq 'GET' && $path eq '/';
+    if ($m eq 'GET' && $path eq '/') {    # one address for everyone: other stations send people to the main station
+        my $l = leader(); my ($x) = $l->{id} ne node_id() && $head !~ m{^GET /\?here}m ? grep { $_->{id} eq $l->{id} && $_->{online} } stations() : ();
+        if ($x) { print $c "HTTP/1.1 302 Found\r\nLocation: $x->{url}/\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"; return }
+        return reply($c, 200, $MIME{html}, $PAGE{print});
+    }
     if ($m eq 'GET' && $path eq '/status') {
         my %cf = get_cfg();
         return jreply($c, 200, { waiting => N(jobs($cf{printer})), pin => B(length $cf{pin}), open => B($cf{open} ne '0'), printer => $cf{printer},
-            lang => $cf{lang}, office => office_state(), types => [types()], caps => caps($cf{printer}) });
+            lang => $cf{lang}, office => office_state(), types => [types()], caps => net_caps($cf{printer}), station => station_of(%cf),
+            scan => B(scalar @{ scanners_all() }), hasPrinter => B(length $cf{printer} && pstatus($cf{printer}) ne 'Not found') });
     }
     if ($m eq 'POST' && $path eq '/upload') {
         my %cf = get_cfg();
@@ -482,7 +1239,11 @@ sub handle {
             else { rename $tmp, "$UP/$src" }
         }
         elsif ($ext eq 'pdf') { rename $tmp, "$UP/$src" }
-        else { rename $tmp, "$UP/$src"; $state = 'converting'; my $pid = fork; if (defined $pid && !$pid) { $SIG{ALRM} = 'DEFAULT'; alarm 170; convert($id, $ext); exit 0 } }
+        else {    # Word/Excel/PowerPoint/text: converted here or on the station with the most free power
+            rename $tmp, "$UP/$src"; $state = 'converting';
+            my $pid = fork; if (defined $pid && !$pid) { $SIG{ALRM} = 'DEFAULT'; my $x = ($ext eq 'txt' && $CUPSFILTER) ? undef : pick_converter();
+                if ($x) { remote_convert($x, $id, $ext) } else { alarm 170; convert($id, $ext) } exit 0 }
+        }
         (my $from = $peer) =~ s/[^0-9A-Fa-f.]/_/g;
         spit("$UP/$id.meta", json({ name => $name, ext => $ext, kind => $kind, src => $src, from => $from, created => N(time) }));
         return jreply($c, 200, { id => $id, kind => $kind, state => $state });
@@ -505,25 +1266,30 @@ sub handle {
         my $body = read_body($c, $len, $rest); return unless defined $body;
         my $id = jget($body, 'id') || ''; my $mt = meta($id);
         return jreply($c, 410, { error => 'GONE' }) unless $mt && state_of($id, $mt) eq 'ready';
-        my %s = map { $_ => jget($body, $_) } qw(copies pages paper orientation color duplex margins scale nup land);
-        $s{$_} = '' for grep { !defined $s{$_} } keys %s;
-        my %ok = (orientation => qr/^(auto|portrait|landscape)$/, color => qr/^(color|gray)$/, duplex => qr/^(off|long|short)$/,
-                  margins => qr/^(none|narrow|normal|wide)$/, scale => qr/^(fit|actual)$/, nup => qr/^[124]$/, pages => qr/^[0-9,\-\s]{0,200}$/);
-        for (keys %ok) { return jreply($c, 400, { error => 'Bad settings.' }) unless $s{$_} =~ $ok{$_} }
-        $s{copies} = ($s{copies} =~ /^\d+$/ && $s{copies} >= 1) ? ($s{copies} > 20 ? 20 : $s{copies}) : 1;
-        $s{land} = $s{orientation} eq 'landscape' ? 1 : $s{orientation} eq 'portrait' ? 0 : ($s{land} ? 1 : 0);
         my $cp = caps($cf{printer});
-        $s{paper} = $cp->{def} unless grep { $_->{n} eq $s{paper} } @{ $cp->{papers} };
-        $s{color} = 'gray' unless ${ $cp->{color} }; $s{duplex} = 'off' unless ${ $cp->{duplex} };
-        $s{name} = $mt->{name};
+        # colour / two-sided are allowed when ANY station that could take the job has them; the chosen station decides
+        my $netc = grep { $_->{online} && $_->{s}{color} } stations(); my $netd = grep { $_->{online} && $_->{s}{duplex} } stations();
+        my $cpx = { %$cp, color => B(${ $cp->{color} } || $netc), duplex => B(${ $cp->{duplex} } || $netd) };
+        my $sp = norm_settings(sub { jget($body, $_[0]) }, $cpx) or return jreply($c, 400, { error => 'Bad settings.' });
+        my %s = %$sp; $s{name} = $mt->{name};
+        my ($pp) = grep { $_->{n} eq $s{paper} } @{ $cp->{papers} }; ($s{pw}, $s{ph}) = $pp ? (${ $pp->{w} }, ${ $pp->{h} }) : ('', '');
+        my $sh = jget($body, 'sheets') // ''; $s{sheets} = ($sh =~ /^\d+$/ && $sh >= 1) ? ($sh > 5000 ? 5000 : $sh) : $s{copies}; $s{from} = $mt->{from};
+        my $want = jget($body, 'target') // 'auto'; $want = 'auto' unless $want =~ /^(auto|[0-9a-f]{32})$/;
+        my ($tgt, $err) = pick_station($want, { color => $s{color} eq 'color', duplex => $s{duplex} ne 'off', pw => $s{pw}, ph => $s{ph} });
+        return jreply($c, 409, { error => 'STATION_OFFLINE' }) if $err;
+        unless ($tgt) { $s{color} = 'gray' unless ${ $cp->{color} }; $s{duplex} = 'off' unless ${ $cp->{duplex} } }    # printing here after all
         my $f = $mt->{kind} eq 'image' ? "$UP/$mt->{src}" : "$UP/$id.pdf";
         my ($e) = $f =~ /(\.\w+)$/;
         my $label = strftime('%Y%m%d-%H%M%S', localtime) . '-' . int(rand(99999)) . "-from$mt->{from}-c$s{copies}$e";
         my $job = "$UP/job-$label"; rename $f, $job;
         unlink glob("$UP/$id.*");
-        jreply($c, 200, { ok => B(1), waiting => N(jobs($cf{printer}) + 1) });
+        my $jid = rnd_hex(8); my $here = station_of(%cf); my ($jobs) = cups_queue($cf{printer});
+        job_set($jid, state => $tgt ? 'sending' : 'queued', station => $tgt ? $tgt->{station} : $here, sid => $tgt ? $tgt->{id} : node_id(),
+                sheets => $s{sheets}, ahead => $tgt ? ($tgt->{s}{jobs} || 0) : $jobs);
+        jreply($c, 200, { ok => B(1), jid => $jid, station => $tgt ? $tgt->{station} : $here, here => B(!$tgt), waiting => N($jobs + 1) });
         close $c;
-        do_print($job, \%s, $label);
+        hold($jid, $job, \%s, $label);
+        if ($tgt) { forward_job($tgt, $job, \%s, $label, $jid, $want ne 'auto') } else { do_print($job, \%s, $label, $jid) }
         return;
     }
     jreply($c, 404, { error => 'Not found' });
@@ -532,15 +1298,28 @@ sub handle {
 # ---------------------------------------------------------------- main
 $SIG{PIPE} = 'IGNORE';
 our $MAIN_PID = $$;
-mkdir $DIR; mkdir $UP;
+mkdir $DIR; mkdir $UP; mkdir $SYNC, 0700; mkdir $STD; mkdir $JOBS; mkdir $SCANS; mkdir $HELD; chmod 0700, $SYNC;
 my $srv = IO::Socket::INET->new(LocalPort => $PORT, Listen => 64, ReuseAddr => 1, Proto => 'tcp') or die "cannot listen on port $PORT: $!\n";
 my $MDNS = announce(); $SIG{TERM} = $SIG{INT} = sub { exit 0 }; END { kill 'TERM', $MDNS if $MDNS && $$ == $MAIN_PID }
 print STDERR "School Printer listening on :$PORT (data: $DIR, LibreOffice: " . ($SOFFICE || 'none') . ")\n";
-$SIG{CHLD} = sub { 1 while waitpid(-1, WNOHANG) > 0 };
+my $WORKER = 0;
+my $srv80;
+sub start_worker { my $pid = fork; if (defined $pid && !$pid) { close $srv; close $srv80 if $srv80; $SIG{TERM} = $SIG{INT} = 'DEFAULT'; worker(); exit 0 } $WORKER = $pid || 0 }
+$SIG{CHLD} = sub { while ((my $k = waitpid(-1, WNOHANG)) > 0) { $WORKER = 0 if $k == $WORKER } };
+start_worker(); END { kill 'TERM', $WORKER if $WORKER && $$ == $MAIN_PID }
+$srv80 = $ENV{SP_PORT} ? undef : IO::Socket::INET->new(LocalPort => 80, Listen => 64, ReuseAddr => 1, Proto => 'tcp');    # "http://<school address>"
+my $LISTEN = IO::Select->new($srv, $srv80 ? $srv80 : ());
+my $DNS = 0;
+sub start_dns { my $pid = fork; if (defined $pid && !$pid) { close $srv; close $srv80 if $srv80; $SIG{TERM} = $SIG{INT} = 'DEFAULT'; dns_server(); exit 0 } $DNS = $pid || 0 }
+$SIG{CHLD} = sub { while ((my $k = waitpid(-1, WNOHANG)) > 0) { $WORKER = 0 if $k == $WORKER; $DNS = 0 if $k == $DNS } };
+END { kill 'TERM', $DNS if $DNS && $$ == $MAIN_PID }
 while (1) {
-    my $c = $srv->accept or next;
+    start_worker() unless $WORKER;
+    start_dns() unless $DNS || !$HAS_SHA;
+    my ($ready) = $LISTEN->can_read(10) or next;
+    my $c = $ready->accept or next;
     my $pid = fork;
     if (!defined $pid) { close $c; next }
-    if (!$pid) { $SIG{CHLD} = 'DEFAULT'; close $srv; eval { handle($c) }; close $c; exit 0 }
+    if (!$pid) { $SIG{CHLD} = 'DEFAULT'; close $srv; close $srv80 if $srv80; eval { handle($c) }; close $c; exit 0 }
     close $c;
 }

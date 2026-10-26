@@ -3,11 +3,14 @@
 # A bare .pdf/.png/.jpg without .json (e.g. from the Mac "Print on Windows PC" menu) prints with defaults.
 # PDFs are drawn with Windows' own PDF renderer (Windows.Data.Pdf) - no extra software. The sheet layout is
 # the SAME maths as the web preview (print.js), so what you see is what comes out.
+# Every document is read into memory first: the file itself is never held open, so it can always be deleted after
+# printing. (Windows' PDF reader kept the file open; the delete failed silently, the leftover PDF was picked up again
+# as a new job, and the log filled with failing prints every few seconds.) Each file is tried once.
 $root  = if ($env:SP_ROOT) { $env:SP_ROOT } else { 'C:\ProgramData\MacPrint' }   # SP_ROOT / SP_TESTOUT: test copies only
 $inbox = Join-Path $root 'Inbox'
 $log   = Join-Path $root 'log.txt'
-$cfg   = Join-Path $root 'config.txt'
 Add-Type -AssemblyName System.Drawing, System.Runtime.WindowsRuntime
+. (Join-Path $PSScriptRoot 'sync.ps1')
 $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
 $null = [Windows.Data.Pdf.PdfDocument, Windows.Data.Pdf, ContentType = WindowsRuntime]
 $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
@@ -20,23 +23,20 @@ function AwaitA($a) { [void]$asAct.Invoke($null, @($a)).Wait(120000) }
 $MARG = @{ none = 0.0; narrow = 6.35; normal = 12.7; wide = 25.4 }
 $H = 100 / 25.4    # millimetres -> hundredths of an inch (System.Drawing printer units)
 
-function Get-PrinterName {
-    $p = ''
-    if (Test-Path $cfg) { $l = Get-Content $cfg -Encoding UTF8 | Where-Object { $_ -match '^\s*printer\s*=' } | Select-Object -First 1; if ($l) { $p = ($l -replace '^\s*printer\s*=', '').Trim() } }
-    if (-not $p) { $p = (Get-CimInstance Win32_Printer -Filter 'Default=TRUE' -EA SilentlyContinue).Name }
-    $p
-}
+function Get-PrinterName { (Sp-Cfg).printer }    # never a "School Printer" queue (see sync.ps1)
 
 # ---- source document: list of page sizes (mm) + a renderer
 function Open-Source($path) {
+    $mem = New-Object IO.MemoryStream (, [IO.File]::ReadAllBytes($path))
     if ([IO.Path]::GetExtension($path) -eq '.pdf') {
-        $f = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($path)) ([Windows.Storage.StorageFile])
-        $d = Await ([Windows.Data.Pdf.PdfDocument]::LoadFromFileAsync($f)) ([Windows.Data.Pdf.PdfDocument])
+        $ras = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($mem)
+        $d = Await ([Windows.Data.Pdf.PdfDocument]::LoadFromStreamAsync($ras)) ([Windows.Data.Pdf.PdfDocument])
+        if (-not $d) { $ras.Dispose(); $mem.Dispose(); throw 'This PDF could not be opened.' }
         $sizes = New-Object System.Collections.Generic.List[object]
         for ($i = 0; $i -lt $d.PageCount; $i++) { $p = $d.GetPage($i); $sizes.Add(@(($p.Size.Width * 25.4 / 96), ($p.Size.Height * 25.4 / 96))); $p.Dispose() }
-        return @{ kind = 'pdf'; doc = $d; sizes = $sizes }
+        return @{ kind = 'pdf'; doc = $d; sizes = $sizes; mem = $mem; ras = $ras }
     }
-    $img = [System.Drawing.Image]::FromFile($path)
+    $img = [System.Drawing.Image]::FromStream($mem)
     if ($img.PropertyIdList -contains 274) {    # phone photos: turn them the right way up
         switch ([int]$img.GetPropertyItem(274).Value[0]) {
             3 { $img.RotateFlip('Rotate180FlipNone') } 6 { $img.RotateFlip('Rotate90FlipNone') } 8 { $img.RotateFlip('Rotate270FlipNone') }
@@ -44,7 +44,7 @@ function Open-Source($path) {
     }
     $sizes = New-Object System.Collections.Generic.List[object]
     $sizes.Add(@(($img.Width * 25.4 / 96), ($img.Height * 25.4 / 96)))
-    @{ kind = 'img'; img = $img; sizes = $sizes }
+    @{ kind = 'img'; img = $img; sizes = $sizes; mem = $mem }
 }
 function Render-Page($src, $i, $wpx) {
     if ($src.kind -eq 'img') { return $src.img }
@@ -97,8 +97,10 @@ $gray.SetColorMatrix((New-Object System.Drawing.Imaging.ColorMatrix(, [single[][
     [single[]](0, 0, 0, 1, 0), [single[]](0, 0, 0, 0, 1)))))
 
 function Print-Job($file, $s, $printer) {
-    $src = Open-Source $file
+    $src = $null
     try {
+        if (-not $printer) { return 'printer-not-found' }
+        $src = Open-Source $file
         $pd = New-Object System.Drawing.Printing.PrintDocument
         $pd.PrinterSettings.PrinterName = $printer
         if ($env:SP_TESTOUT) { $pd.PrinterSettings.PrintToFile = $true; $pd.PrinterSettings.PrintFileName = Join-Path $env:SP_TESTOUT ([IO.Path]::GetFileNameWithoutExtension($file) + '.pdf') }   # test hook
@@ -119,7 +121,7 @@ function Print-Job($file, $s, $printer) {
                 default { 'Simplex' }
             }
         }
-        $pd.DocumentName = if ($s.name) { "School Printer - $($s.name)" } else { 'School Printer' }
+        $pd.DocumentName = $(if ($s.name) { "School Printer - $($s.name)" } else { 'School Printer' }) + $(if ($s.jid) { " [$(([string]$s.jid).Substring(0, 6))]" } else { '' })
         $pd.PrintController = New-Object System.Drawing.Printing.StandardPrintController
         $order = New-Object System.Collections.Generic.List[object]          # collated copies
         for ($c = 0; $c -lt [int]$s.copies; $c++) { foreach ($sh in $L.sheets) { $order.Add($sh) } }
@@ -149,24 +151,34 @@ function Print-Job($file, $s, $printer) {
     } catch {
         return 'error: ' + $_.Exception.Message
     } finally {
-        if ($src.kind -eq 'img') { $src.img.Dispose() }
+        if ($src) { if ($src.kind -eq 'img') { $src.img.Dispose() }; if ($src.ras) { $src.ras.Dispose() }; if ($src.mem) { $src.mem.Dispose() } }
     }
 }
 
 $defaults = @{ copies = 1; pages = ''; paper = ''; orientation = 'auto'; color = 'color'; duplex = 'off'; margins = 'none'; scale = 'fit'; nup = 1 }
+$tried = @{}    # file -> time: every file is printed at most once, even if it cannot be deleted
+function Done-With([string[]]$paths) {
+    foreach ($p in $paths) {
+        Remove-Item -LiteralPath $p -Force -EA SilentlyContinue
+        if (Test-Path -LiteralPath $p) { try { Move-Item -LiteralPath $p -Destination "$p.done" -Force -EA Stop } catch { $script:tried[$p] = Get-Date } }
+    }
+}
 while ($true) {
+    foreach ($k in @($tried.Keys)) { if (-not (Test-Path -LiteralPath $k)) { $tried.Remove($k) } elseif (((Get-Date) - $tried[$k]).TotalMinutes -gt 30) { Remove-Item -LiteralPath $k -Force -EA SilentlyContinue } }
+    Get-ChildItem $inbox -Filter *.done -File -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
     $printer = Get-PrinterName
     $jobs = @(Get-ChildItem $inbox -File -Filter *.json -EA SilentlyContinue | Sort-Object LastWriteTime)
     $loose = @(Get-ChildItem $inbox -File -EA SilentlyContinue | Where-Object {
-        $_.Extension -in '.pdf', '.png', '.jpg', '.jpeg', '.gif' -and -not (Test-Path ([IO.Path]::ChangeExtension($_.FullName, '.json'))) -and
+        $_.Extension -in '.pdf', '.png', '.jpg', '.jpeg', '.gif' -and -not $tried.ContainsKey($_.FullName) -and -not (Test-Path ([IO.Path]::ChangeExtension($_.FullName, '.json'))) -and
         ((Get-Date) - $_.LastWriteTime).TotalSeconds -gt 3 })
     foreach ($j in $jobs) {
         $s = $null; try { $s = [IO.File]::ReadAllText($j.FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json } catch {}
         $file = if ($s) { Join-Path $inbox $s.file } else { $null }
-        if (-not $s -or -not (Test-Path $file)) { Remove-Item $j.FullName -Force -EA SilentlyContinue; continue }
+        if (-not $s -or -not (Test-Path $file) -or $tried.ContainsKey($file)) { Remove-Item $j.FullName -Force -EA SilentlyContinue; continue }
         $code = Print-Job $file $s $printer
         Add-Content $log "$(Get-Date -Format s)  $($s.file)  copies=$($s.copies)  exit=$code"
-        Remove-Item $file, $j.FullName -Force -EA SilentlyContinue
+        if ($s.jid) { if ($code -eq 0) { Sp-JobSet ([string]$s.jid) @{ state = 'printing' } } else { Sp-JobSet ([string]$s.jid) @{ state = 'failed'; err = [string]$code } } }
+        Done-With @($file, $j.FullName)
     }
     foreach ($f in $loose) {    # Mac PDF menu / older senders
         try { $h = [IO.File]::Open($f.FullName, 'Open', 'Read', 'None'); $h.Close() } catch { continue }
@@ -175,7 +187,7 @@ while ($true) {
         $s = [pscustomobject]$s
         $code = Print-Job $f.FullName $s $printer
         Add-Content $log "$(Get-Date -Format s)  $($f.Name)  copies=$($s.copies)  exit=$code"
-        Remove-Item $f.FullName -Force -EA SilentlyContinue
+        Done-With @($f.FullName)
     }
     if ((Test-Path $log) -and (Get-Item $log).Length -gt 1MB) { Get-Content $log -Tail 500 | Set-Content "$log.tmp"; Move-Item "$log.tmp" $log -Force }
     Start-Sleep -Seconds 2
