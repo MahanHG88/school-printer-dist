@@ -17,8 +17,9 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.6.0'
-    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.0/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+    $Version = '1.6.1'
+    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.1/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+    $Pack    = ''          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
     $Files   = [ordered]@{    # path under /app/  =  SHA-256, size   (filled in by build.sh)
@@ -27,20 +28,20 @@ function Install-SchoolPrinter {
         'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
         'win/ipp.ps1' = @('037153FEF862F76BBF72CB0AE6D1B2BBF695E5F45E6069EB2292D659FA3CF6FA', 23063)
         'win/sync.ps1' = @('B63C27AB60721D58C97540D118F8EEB4E8E00528967AE1D9C5CAAEC64F4DF759', 26065)
-        'win/syncd.ps1' = @('2DC386874429A9D790686EC00D3A22802B858EB3AE5F1D523020241A62A16002', 36783)
+        'win/syncd.ps1' = @('2023A938B6941982DB075D92AEE3D643589D37FE17597A595586165BA0342507', 36783)
         'win/dns.ps1' = @('409515475605CF8E4B245B8B593BB2D6FE86708017C774DC55A886139CBCA9EB', 5293)
         'win/control.ps1' = @('4B98219C7F23117F8CEB00EFBBE863D37253A07105C60C3F837E5EB758E560CF', 1863)
-        'web/admin.html' = @('0454E6EC8A89DE07B9778013AF5F6BE5D18B78F379ECAB4FCDAD319EFA686C09', 7570)
+        'web/admin.html' = @('DCBC3FE06B023C8536ECFDC3F475E8E1D8A35691AA0E19B1181B01AB1112577E', 7570)
         'web/admin.js' = @('B9DAC0CA67D2FAC7384A82FF9512740CE164DA15DDA7C82E2EEEF52731A79C9E', 12042)
         'web/app.css' = @('5D12D643F632D022034EAB5693578C9730D07DAE3FD3F633DBFBBCBB883F6ADA', 22194)
         'web/i18n.js' = @('6E52BB722C168AC0BFDEA0D85D2E7A49D8D6A14F6783CD26063BF11BD49E0543', 31241)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('04EC3A440FBAA477CB0BA7223DCCFADF3207ABCFF52F52C21DB3D72EA7E81C20', 13876)
+        'web/print.html' = @('4A18E129F79950A074A420643114434646F411A2A7496FF85D5D9F4775F31347', 13876)
         'web/print.js' = @('42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86', 35529)
         'web/vazirmatn.woff2' = @('4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92', 111152)
     }
-    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.0/install-ir.ps1'))"
+    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.1/install-ir.ps1'))"
 
     # ================================================================ look: live dashboard
     $E = [char]27
@@ -154,6 +155,25 @@ function Install-SchoolPrinter {
             while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) { $out.Write($buf, 0, $n); & $onBytes $n }
         } finally { $out.Close(); $in.Close(); $res.Close() }
     }
+    function Open-Pack($url, $dir) {    # npm package (.tgz) -> files in $dir; a tiny tar reader, no tar.exe needed. -> download stats
+        $sw = [Diagnostics.Stopwatch]::StartNew(); $tgz = Join-Path $env:TEMP 'sp-pack.tgz'
+        $script:packGot = 0; Get-File $url $tgz { param($n) $script:packGot += $n }
+        $lat = 0.05; $secs = $sw.Elapsed.TotalSeconds
+        $gz = New-Object IO.Compression.GZipStream ([IO.File]::OpenRead($tgz)), ([IO.Compression.CompressionMode]::Decompress)
+        $ms = New-Object IO.MemoryStream; $gz.CopyTo($ms); $gz.Close(); Remove-Item $tgz -Force -EA SilentlyContinue
+        $t = $ms.ToArray(); $i = 0; $a = [Text.Encoding]::ASCII
+        while ($i + 512 -le $t.Length -and $t[$i] -ne 0) {
+            $name = $a.GetString($t, $i, 100).Split([char]0)[0]; $pre = $a.GetString($t, $i + 345, 155).Split([char]0)[0]; if ($pre) { $name = "$pre/$name" }
+            $size = [Convert]::ToInt64(($a.GetString($t, $i + 124, 12).Split([char]0)[0].Trim()) + '0', 8) / 8; $type = [char]$t[$i + 156]
+            $i += 512
+            if (($type -eq '0' -or $type -eq [char]0) -and $name -notmatch '\.\.' ) {
+                $dest = Join-Path $dir ($name -replace '/', '\'); New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
+                $f = [IO.File]::Create($dest); $f.Write($t, $i, $size); $f.Close()
+            }
+            $i += [math]::Ceiling($size / 512) * 512
+        }
+        @{ bytes = $script:packGot; lat = $lat; kbps = ($script:packGot / 1024) / [math]::Max(0.001, $secs); total = $secs }
+    }
     function Measure-Net {    # exact: bytes of a 128 KB test file / transfer time, plus time to first byte
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $req = [Net.HttpWebRequest]::Create("$Base/probe.bin?t=$([guid]::NewGuid().ToString('N'))")
@@ -204,12 +224,21 @@ function Install-SchoolPrinter {
     Finish 'check' ("{0:N1} GB free on C:  $dot  PowerShell {1}" -f ($free / 1024), $PSVersionTable.PSVersion.ToString(2))
 
     # ---------------------------------------------------------------- 2. network speed + plan
-    $local = $here -and (Test-Path (Join-Path $here 'win'))
     $net = $null
-    Begin 'net' 'downloading a 128 KB test file'
-    if ($local) { Finish 'net' 'offline install - using the files next to this script' }
-    elseif ($need.Count -eq 0) { Finish 'net' 'skipped - all files already up to date' }
+    if ($Pack -and $need.Count -and -not ($here -and (Test-Path (Join-Path $here 'win')))) {    # Runflare: the whole package in one download
+        Begin 'net' 'downloading every file in one package (Runflare mirror)'
+        $pdir = Join-Path $env:TEMP ('sp-pack-' + [guid]::NewGuid().ToString('N'))
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $net = Open-Pack $Pack $pdir }
+        catch { Fail 'net' 'Could not download from the Runflare mirror.' 'Try the other Iran mirror (jsDelivr) on print.mahanmirzaee.com, or Plan B: download SchoolPrinter-windows.zip on any device, copy it here (a USB stick is fine), unzip it and double-click Install.cmd.'; return }
+        $here = Join-Path $pdir 'package\app'
+        Finish 'net' ("{0:N1} KB/s  $dot  {1} in one package  $dot  every file is checked next" -f $net.kbps, (KB $net.bytes))
+    }
+    $local = $here -and (Test-Path (Join-Path $here 'win'))
+    if ($net) { }
+    elseif ($local) { Begin 'net'; Finish 'net' 'offline install - using the files next to this script' }
+    elseif ($need.Count -eq 0) { Begin 'net'; Finish 'net' 'skipped - all files already up to date' }
     else {
+        Begin 'net' 'downloading a 128 KB test file'
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $net = Measure-Net }
         catch { Fail 'net' 'Could not reach the download server (jsDelivr mirror (Iran)).' 'Plan B: download SchoolPrinter-windows.zip from print.mahanmirzaee.com on any device, copy it here (a USB stick is fine), unzip it and double-click Install.cmd.'; return }
         Finish 'net' ("{0:N1} KB/s  $dot  {1:N0} ms latency  $dot  measured with {2}" -f $net.kbps, ($net.lat * 1000), (KB $net.bytes))
@@ -265,6 +294,7 @@ function Install-SchoolPrinter {
     $dlSecs = ((Get-Date) - $script:dlStart).TotalSeconds
     if ($fetched) { Finish 'files' ("{0} files  $dot  {1}  $dot  {2:N1} KB/s average  $dot  SHA-256 verified" -f $fetched, (KB $needBytes), (($needBytes / 1024) / [math]::Max(0.05, $dlSecs))) }
     else { Finish 'files' 'already up to date' }
+    if ($pdir) { Remove-Item $pdir -Recurse -Force -EA SilentlyContinue }
 
     # ---------------------------------------------------------------- 4. printer
     Begin 'printer'
@@ -374,7 +404,7 @@ function Install-SchoolPrinter {
     foreach ($ip in $ips) { Write-Host "      $(Grad "http://${ip}:$Port")" }
     Write-Host "      $($D)or http://$($env:COMPUTERNAME):$Port$R"
     Write-Host ''
-    Write-Host "   $($B)On this PC$(R): double-click $B`"School Printer (Admin)`"$R on the desktop."
+    Write-Host "   $($B)On this PC$($R): double-click $B`"School Printer (Admin)`"$R on the desktop  $D($B`"Start`"$R$D / $B`"Stop School Printer`"$R$D start and stop it)$R."
     Write-Host ''
     Start-Process "http://localhost:$Port/admin"
     } finally { try { [Console]::CursorVisible = $true } catch {} }

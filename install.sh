@@ -13,10 +13,11 @@
 # non-ASCII character: in a UTF-8 locale bash 3.2 reads "$MU·" as a variable named "MU·" (seen 2026-10-20).
 set -euo pipefail
 
-VERSION="1.6.0"
+VERSION="1.6.1"
 BASE="https://print.mahanmirzaee.com/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+PACK=""          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
 PORT=8631
-FILES=("unix/schoolprinter.pl:30BBEEECB84D964404A6BA809B26FB4FFA3A0FD1222099970F53F75D6F2A5FDF:104933" "web/admin.html:0454E6EC8A89DE07B9778013AF5F6BE5D18B78F379ECAB4FCDAD319EFA686C09:7570" "web/admin.js:B9DAC0CA67D2FAC7384A82FF9512740CE164DA15DDA7C82E2EEEF52731A79C9E:12042" "web/app.css:5D12D643F632D022034EAB5693578C9730D07DAE3FD3F633DBFBBCBB883F6ADA:22194" "web/i18n.js:6E52BB722C168AC0BFDEA0D85D2E7A49D8D6A14F6783CD26063BF11BD49E0543:31241" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:04EC3A440FBAA477CB0BA7223DCCFADF3207ABCFF52F52C21DB3D72EA7E81C20:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:E92F9CB674D8ED4371994430404237B95CE8E7EBE9B02C7DB23F0BF7793FB2BA:104933" "web/admin.html:DCBC3FE06B023C8536ECFDC3F475E8E1D8A35691AA0E19B1181B01AB1112577E:7570" "web/admin.js:B9DAC0CA67D2FAC7384A82FF9512740CE164DA15DDA7C82E2EEEF52731A79C9E:12042" "web/app.css:5D12D643F632D022034EAB5693578C9730D07DAE3FD3F633DBFBBCBB883F6ADA:22194" "web/i18n.js:6E52BB722C168AC0BFDEA0D85D2E7A49D8D6A14F6783CD26063BF11BD49E0543:31241" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:4A18E129F79950A074A420643114434646F411A2A7496FF85D5D9F4775F31347:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
@@ -145,8 +146,17 @@ finish check "$(awk -v m="$free_mb" 'BEGIN{printf "%.1f GB free", m/1024}')  · 
 # ---------------------------------------------------------------- 2. network speed + plan
 LOCAL=""; [ -n "$HERE" ] && [ -d "$HERE/web" ] && LOCAL=1
 NET_KBPS_T=0; LAT=0
-begin net "downloading a 128 KB test file"
-if [ -n "$LOCAL" ]; then finish net "offline install - using the files next to this script"
+if [ -n "$PACK" ] && [ -z "$LOCAL" ] && [ ${#NEED[@]} -gt 0 ]; then    # Runflare: the whole package in one download
+    begin net "downloading every file in one package (Runflare mirror)"
+    t0=$(now_ms); mkdir -p "$tmpd/pack"
+    curl -fsSL --retry 2 -o "$tmpd/pack.tgz" "$PACK" && tar -xzf "$tmpd/pack.tgz" -C "$tmpd/pack" 2>/dev/null \
+        || fail net "Could not download from the Runflare mirror." "Try the other Iran mirror (jsDelivr) on print.mahanmirzaee.com, or Plan B: download SchoolPrinter-mac-linux.zip on any device, copy it here, unzip, and run: sudo bash install.sh"
+    PB=$(wc -c < "$tmpd/pack.tgz"); XFER=$(( $(now_ms) - t0 )); (( XFER < 1 )) && XFER=1
+    HERE="$tmpd/pack/package/app"; LOCAL=1; NET_KBPS_T=$(( PB * 10000 / 1024 / XFER ))
+    finish net "$(kbps "$PB" "$XFER")  ·  $(kb "$PB") in one package  ·  every file is checked next"
+else begin net "downloading a 128 KB test file"; fi
+if [ -n "$PACK" ] && (( NET_KBPS_T > 0 )); then :
+elif [ -n "$LOCAL" ]; then finish net "offline install - using the files next to this script"
 elif [ ${#NEED[@]} -eq 0 ]; then finish net "skipped - all files already up to date"
 else
     m="$(curl -fsS -o /dev/null -w '%{size_download} %{time_starttransfer} %{time_total}' "$BASE/probe.bin?t=$RANDOM$RANDOM" 2>/dev/null)" \
