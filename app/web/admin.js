@@ -31,12 +31,15 @@
   function mb(n) { return n >= 1024 ? (n / 1024).toFixed(1) + ' GB' : n + ' MB'; }
   function meter(p, txt) { var c = p >= 85 ? 'err' : p >= 60 ? 'warn' : 'ok'; return '<div class="meter ' + c + '"><i style="width:' + Math.max(3, Math.min(100, p)) + '%"></i></div><span class="mute">' + esc(txt) + '</span>'; }
   var CONV = { office: 'convOffice', lo: 'convLo', signin: 'convSignin', none: 'convNone', peer: 'convNone' };
-  function pwCheck() {
-    var v = $('npw').value, n = Array.from(v).length;
-    $('npwcount').textContent = L('pwCount', { n: n }); $('npwcount').className = 'sm counter ' + (n >= 8 ? 'ok' : n ? 'warn' : 'mute');
-    var miss = n ? (n < 8 ? L('pwMissShort', { k: 8 - n }) : '') : L('pwMissEmpty');
-    $('nmiss').textContent = miss; $('njoin').disabled = !!miss || !!joining; return !miss;
+  var TOKRX = /^[A-HJKMNP-Z2-9]{12}$/;
+  function tokVal() { return $('jtok').value.toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+  function jCheck() {
+    var v = tokVal(), n = v.length, ok = TOKRX.test(v);
+    $('jcount').textContent = L('tokCount', { n: n }); $('jcount').className = 'sm counter ' + (ok ? 'ok' : n ? 'warn' : 'mute');
+    var miss = !n ? L('tokMissEmpty') : n !== 12 ? L('tokMissLen', { k: Math.abs(12 - n) }) : !ok ? L('tokMissChars') : '';
+    $('jmiss').textContent = miss; $('njoin').disabled = !!miss || !!joining; return ok ? v : null;
   }
+  function fmtTok(t) { return t.slice(0, 4) + '-' + t.slice(4, 8) + '-' + t.slice(8); }
   function stnCheck() {
     var n = Array.from($('stn').value.trim()).length;
     $('stncount').textContent = L('stCount', { n: n }); $('stncount').className = 'sm counter ' + (n ? 'ok' : 'err');
@@ -44,19 +47,21 @@
   }
   function paintNet(n) {
     if (!n) return;
-    $('netnosha').hidden = n.ok; var show = n.ok && (!n.joined || changing);
-    $('netjoin').hidden = !show; $('netok').hidden = !n.ok || !n.joined || changing;
+    $('netnosha').hidden = n.ok; $('netmode').hidden = !n.ok; $('netok').hidden = !n.ok; $('nocrypto').hidden = n.crypto !== false;
+    var al = n.alerts || []; $('alerts').hidden = !al.length;
+    $('alerts').innerHTML = al.map(function (a) { return '<div class="alert"><span>' + esc(L('idChanged', { s: a.station })) + '</span><button class="btn" type="button" data-trust="' + esc(a.id) + '">' + esc(L('trustAgain')) + '</button></div>'; }).join('');
+    [].forEach.call($('alerts').querySelectorAll('[data-trust]'), function (b) { b.onclick = function () {
+      if (confirm(L('confirmTrust'))) api('net', { do: 'trust', id: b.getAttribute('data-trust') }).then(function (r) { res(r, 'tSaved'); }); }; });
+    [].forEach.call(document.querySelectorAll('.netopts .opt'), function (b) { b.setAttribute('aria-checked', String(b.getAttribute('data-net') === n.mode)); });
+    $('tokbox').hidden = n.mode !== 'private';
+    if (n.token) { $('tokv').hidden = false; $('tokv').textContent = fmtTok(n.token); $('tokleft').textContent = L('tokLeft', { m: Math.max(1, Math.ceil(n.tokenLeft / 60)) }); $('ntoken').textContent = L('tokNew'); }
+    else { $('tokv').hidden = true; $('tokleft').textContent = ''; $('ntoken').textContent = L('tokShow'); }
     var on = (n.stations || []).filter(function (x) { return x.online; }).length, all = (n.stations || []).length;
     $('netdot').className = 'dot ' + (!n.joined ? '' : on > 1 ? 'ok' : 'warn');
     $('netstate').textContent = !n.joined ? L('netAlone') : on > 1 ? L('netOn', { n: on }) : L('netSearching');
-    if (joining) {
-      var others = on - 1, waited = (Date.now() - joining) / 1000;
-      if (n.joined && others > 0) { joining = 0; changing = false; toast(L('tJoined', { n: others }), 'ok'); $('nprog').hidden = true; $('npw').value = ''; pwCheck(); paintNet(n); return; }
-      if (waited > 20) { joining = 0; changing = false; $('nprog').hidden = true; toast(L('tJoinedAlone'), 'ok'); $('npw').value = ''; pwCheck(); paintNet(n); return; }
-      $('nprogt').textContent = L('netLooking');
-    }
-    if (n.joined && !changing) {
-      $('netsum').textContent = on > 1 ? L('netSum', { n: on }) : L('netSumAlone');
+    if (joining && Date.now() - joining > 25000) { joining = 0; $('nprog').hidden = true; jCheck(); }
+    if (true) {
+      $('netsum').textContent = !n.joined ? L('netSumOff') : on > 1 ? L(n.mode === 'private' ? 'netSumPriv' : 'netSum', { n: on }) : L('netSumAlone');
       var off = all - on, sub = [];
       if (off) sub.push(L('netOff', { n: off }));
       if (n.others) sub.push(L('netOthers', { n: n.others }));
@@ -81,20 +86,26 @@
       }).join('');
     }
   }
-  $('npw').oninput = pwCheck; $('npw').onkeydown = function (e) { if (e.key === 'Enter') $('njoin').click(); };
-  $('npwshow').onclick = function () { var t = $('npw').type === 'password'; $('npw').type = t ? 'text' : 'password'; this.textContent = L(t ? 'hide' : 'show'); };
+  [].forEach.call(document.querySelectorAll('.netopts .opt'), function (b) {
+    b.onclick = function () {
+      var to = b.getAttribute('data-net'), cur = st.net && st.net.mode; if (to === cur) return;
+      var q = to === 'private' ? 'confirmCreate' : cur === 'private' ? 'confirmLeavePriv' : to === 'alone' ? 'confirmAlone' : '';
+      if (q && !confirm(L(q))) return;
+      api('net', { do: to }).then(function (r) { res(r, to === 'private' ? 'tCreated' : to === 'alone' ? 'tAlone' : 'tPublic'); });
+    };
+  });
+  $('ntoken').onclick = function () { api('net', { do: 'token' }).then(function (r) { if (r.error) toast(E(r.error), 'err'); load(); }); };
+  $('jtok').oninput = jCheck; $('jtok').onkeydown = function (e) { if (e.key === 'Enter') $('njoin').click(); };
   $('njoin').onclick = function () {
-    if (!pwCheck()) return;
-    joining = Date.now(); $('njoin').disabled = true; $('nprog').hidden = false; $('nprogt').textContent = L('netConnecting');
-    api('set', { password: $('npw').value }).then(function (r) {
-      if (r.error) { joining = 0; $('nprog').hidden = true; pwCheck(); toast(E(r.error), 'err'); return; }
-      load(); fastLoad();
-    }).catch(function () { joining = 0; $('nprog').hidden = true; pwCheck(); toast(L('tNoServer'), 'err'); });
+    var v = jCheck(); if (!v) return;
+    joining = Date.now(); $('njoin').disabled = true; $('nprog').hidden = false; $('nprogt').textContent = L('joinLooking');
+    api('net', { do: 'join', token: v }).then(function (r) {
+      joining = 0; $('nprog').hidden = true;
+      if (r.error) { jCheck(); toast(E(r.error), 'err'); return; }
+      $('jtok').value = ''; jCheck(); toast(L('tJoinedPriv'), 'ok'); load();
+    }).catch(function () { joining = 0; $('nprog').hidden = true; jCheck(); toast(L('tNoServer'), 'err'); });
   };
-  function fastLoad() { if (!joining) return; setTimeout(function () { load(); fastLoad(); }, 1500); }
   $('nscan').onclick = function () { api('scan', {}).then(function () { toast(L('tScan'), 'ok'); }); };
-  $('nchange').onclick = function () { changing = true; $('npw').value = ''; pwCheck(); paintNet(st.net); $('npw').focus(); };
-  $('nleave').onclick = function () { if (confirm(L('confirmLeave'))) api('set', { password: '' }).then(function (r) { res(r, 'tLeft'); }); };
   $('stn').oninput = function () { stnEdited = true; stnCheck(); };
   $('stnsave').onclick = function () { if (stnCheck()) api('set', { station: $('stn').value.trim() }).then(function (r) { stnEdited = false; res(r, 'tStation'); }); };
   [['tgshare', 'share'], ['tgaccept', 'accept'], ['tgconv', 'conv']].forEach(function (t) {
@@ -110,8 +121,8 @@
   $('dom').oninput = function () { domEdited = true; domCheck(); };
   $('domsave').onclick = function () { var v = domCheck(); if (v !== null) api('set', { domain: v }).then(function (r) { domEdited = false; res(r, 'tSaved'); }); };
   $('tgdns').onclick = function () { api('set', { dns: this.getAttribute('aria-checked') != 'true' }).then(function (r) { res(r, 'tSaved'); }); };
-  pwCheck();
-  window.onLang = function () { if (st.urls) paint(st); pwCheck(); };
+  jCheck();
+  window.onLang = function () { if (st.urls) paint(st); jCheck(); };
   function load() { api('info').then(function (s) { st = s; serverLang(s.lang); paint(s); }).catch(function () { toast(L('tNoServer'), 'err'); }); }
   function res(r, okKey) { toast(r.error ? E(r.error) : L(okKey), r.error ? 'err' : 'ok'); load(); }
   $('sw').onclick = function () { api('set', { open: !st.open }).then(load); };

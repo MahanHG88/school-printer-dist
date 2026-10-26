@@ -1,23 +1,38 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>School Printer Admin</title><link rel="stylesheet" href="/assets/app.css?v=1.6.1"></head>
+<meta name="color-scheme" content="light dark"><title>School Printer Admin</title><link rel="stylesheet" href="/assets/app.css?v=1.7.0"></head>
 <body data-title="adminTitle"><div class="bg"><i></i><i></i><i></i></div>
 <main class="wrap" style="max-width:1000px">
 <header class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7" rx="1"/></svg></div>
 <div class="bt"><b data-t="title">School Printer</b><span class="sub" data-t="adminSub">Admin</span></div><div class="sp"></div>
 <button class="lang" id="lang" type="button" aria-label="Language">EN</button><a class="btn" href="/" data-t="openPrint">Open print page</a></header>
 <section class="glass card netcard" id="net"><div class="nethead"><span class="eyebrow" data-t="netTitle">Printing network</span><span class="pill" id="netpill"><span class="dot" id="netdot"></span><span id="netstate">&hellip;</span></span></div>
-<div id="netjoin" hidden>
-  <h2 class="neth" data-t="netJoinH">Connect this printer to the others</h2>
-  <p class="mute sm" data-t="netJoinP">Type the printing network password. Every School Printer on this network with the same password connects by itself &mdash; nothing else to set up. This computer remembers it, so you only do this once.</p>
-  <label class="lb" for="npw"><span data-t="netPw">Network password</span> <span class="req">&#9733; <span data-t="required">required</span></span></label>
-  <div class="inl"><input id="npw" type="password" autocomplete="off" maxlength="128" data-tp="netPwPh"><button class="btn" id="npwshow" type="button" data-t="show">Show</button></div>
-  <div class="sm counter" id="npwcount"></div>
-  <div class="btns"><button class="cta small" id="njoin" type="button" data-t="netConnect">Connect</button><span class="missing sm" id="nmiss"></span></div>
-  <div class="netprog" id="nprog" hidden><span class="spin"></span><span id="nprogt"></span></div>
+<div class="note alerts" id="alerts" hidden></div>
+<div class="note" id="nocrypto" hidden data-t="noCrypto"></div>
+<div id="netmode" hidden>
+  <div class="opts netopts" role="radiogroup">
+    <button class="opt" type="button" role="radio" data-net="public"><span class="oi"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span>
+      <span class="ot"><b data-t="nmPublic">Public school network</b><em data-t="nmPublicSub"></em></span><span class="ock"></span></button>
+    <button class="opt" type="button" role="radio" data-net="private"><span class="oi"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+      <span class="ot"><b data-t="nmPrivate">Private network</b><em data-t="nmPrivateSub"></em></span><span class="ock"></span></button>
+    <button class="opt" type="button" role="radio" data-net="alone"><span class="oi"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><rect x="6" y="14" width="12" height="7" rx="1"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/></svg></span>
+      <span class="ot"><b data-t="nmAlone">This printer alone</b><em data-t="nmAloneSub"></em></span><span class="ock"></span></button>
+  </div>
+  <div class="tokbox" id="tokbox" hidden>
+    <div><b data-t="tokH">Add a printer to this private network</b><div class="mute sm" data-t="tokP"></div></div>
+    <div class="tokv ltr" id="tokv" hidden></div><div class="mute sm" id="tokleft"></div>
+    <div class="btns"><button class="cta small" id="ntoken" type="button" data-t="tokShow">Show a join token</button></div>
+  </div>
+  <div class="joinbox">
+    <label class="lb" for="jtok"><span data-t="joinH">Join a private network</span> <span class="req">&#9733; <span data-t="required">required</span></span></label>
+    <div class="mute sm" data-t="joinP"></div>
+    <div class="inl"><input id="jtok" class="ltr" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX"><button class="btn" id="njoin" type="button" data-t="joinGo">Join</button></div>
+    <div class="sm counter" id="jcount"></div><span class="missing sm" id="jmiss"></span>
+    <div class="netprog" id="nprog" hidden><span class="spin"></span><span id="nprogt"></span></div>
+  </div>
 </div>
 <div id="netok" hidden>
   <div class="netsum"><div><b id="netsum"></b><div class="mute sm" id="netsub"></div></div>
-    <div class="btns"><button class="btn" id="nscan" type="button" data-t="netScan">Look for printers now</button><button class="btn" id="nchange" type="button" data-t="netChange">Change password</button><button class="btn danger" id="nleave" type="button" data-t="netLeave">Disconnect</button></div></div>
+    <div class="btns"><button class="btn" id="nscan" type="button" data-t="netScan">Look for printers now</button></div></div>
   <div class="grid net3">
     <div><label class="lb" for="stn"><span data-t="stName">Station name</span> <span class="req">&#9733; <span data-t="required">required</span></span></label>
       <div class="inl"><input id="stn" maxlength="40" autocomplete="off" data-tp="stNamePh"><button class="btn" id="stnsave" type="button" data-t="save">Save</button></div>
@@ -56,6 +71,6 @@
 </div>
 <section class="glass card" style="margin-top:16px"><span class="eyebrow" data-t="recent">Recent prints</span><table><thead><tr><th data-t="time">Time</th><th data-t="from">From</th><th data-t="copies">Copies</th><th data-t="result">Result</th></tr></thead><tbody id="log"></tbody></table></section>
 </main><div id="toast" class="glass"></div>
-<script src="/assets/i18n.js?v=1.6.1"></script>
-<script src="/assets/admin.js?v=1.6.1"></script>
+<script src="/assets/i18n.js?v=1.7.0"></script>
+<script src="/assets/admin.js?v=1.7.0"></script>
 </body></html>

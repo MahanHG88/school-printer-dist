@@ -189,83 +189,89 @@ while ($listener.IsListening) {
 
         # ------------------------------------------------ printing network
         if ($m -eq 'GET' -and $path -eq '/sync/hello') {    # public: lets other stations find this one (gid says which network)
-            $c = Get-Cfg; $g = Sp-Group
-            Json $res 200 ([ordered]@{ app = 'school-printer'; proto = 1; id = (Sp-NodeId); station = (Sp-StationName $c); gid = $(if ($g) { [string]$g.gid } else { '' }) }); continue
+            $c = Get-Cfg; $g = Sp-Group; $i = Sp-Identity; $id = Sp-NodeId
+            Json $res 200 ([ordered]@{ app = 'school-printer'; proto = 2; id = $id; station = (Sp-StationName $c); gid = $(if ($g) { [string]$g.gid } else { '' }); net = $(if ($g) { $g.mode } else { 'alone' })
+                                       pk = [string]$i.pk; pkmac = $(if ($g) { Sp-PkMac $g $id ([string]$i.pk) } else { '' }) }); continue
         }
-        if ($path -like '/sync/*') {
-            $from = Sp-Auth $req
-            if (-not $from) { Json $res 401 @{ error = 'SIGNATURE'; time = (Sp-Now) }; continue }
-            if ($m -eq 'POST' -and $path -eq '/sync/announce') {
-                if (-not (Sp-Peers | Where-Object { $_.id -eq $from })) { [IO.File]::WriteAllText((Join-Path $SpSync 'scan-now'), '') }
-                Json $res 200 @{ ok = $true }; continue
-            }
-            if ($m -eq 'GET' -and $path -eq '/sync/status') {
+        if ($m -eq 'POST' -and $path -eq '/sync/join') {    # joining a private network: the token proves itself, no signature
+            $q = $null; if ($req.ContentLength64 -le 4096) { try { $q = (Read-Body $req) | ConvertFrom-Json } catch {} }
+            if (-not $q) { Json $res 400 @{ error = 'BAD' }; continue }
+            $a = Sp-JoinAnswer $q; Json $res $a.code $a.body; continue
+        }
+        if ($path -like '/sync/*') {    # another station: encrypted and sealed both ways (always POST)
+            if ($m -ne 'POST') { Json $res 405 @{ error = 'POST' }; continue }
+            if ($req.ContentLength64 -gt $maxMB * 1MB + 65536) { Json $res 413 @{ error = 'File is bigger than 50 MB.' }; continue }
+            $ms = New-Object IO.MemoryStream; $req.InputStream.CopyTo($ms); $body = $ms.ToArray(); $ms.Dispose()
+            $x = $null; try { $x = Sp-Open $req $body } catch {}
+            if (-not $x) { Json $res 401 @{ error = 'SIGNATURE'; time = (Sp-Now) }; continue }
+            $from = $x.from; $mt = $x.meta; $pl = $x.payload
+            # a station that knows us but we do not know it (its announce got lost): look again now, not in a minute
+            $sn = Join-Path $SpSync 'scan-now'
+            if (-not (Test-Path $sn) -and -not (Sp-Peers | Where-Object { $_.id -eq $from })) { [IO.File]::WriteAllText($sn, '') }
+            if ($path -eq '/sync/announce') { Sp-SJson $res $x 200 @{ ok = $true }; continue }
+            if ($path -eq '/sync/status') {
                 $f = Join-Path $SpSync 'self.json'
-                if (Test-Path $f) { Send $res 200 'application/json; charset=utf-8' ([IO.File]::ReadAllBytes($f)) } else { Json $res 503 @{ error = 'STARTING' } }
+                if (Test-Path $f) { Sp-SReply $res $x 200 ([IO.File]::ReadAllBytes($f)) } else { Sp-SJson $res $x 503 @{ error = 'STARTING' } }
                 continue
             }
-            if ($m -eq 'GET' -and $path -eq '/sync/probe') { Send $res 200 'application/octet-stream' $probe; continue }
-            if ($m -eq 'POST' -and $path -eq '/sync/job') {
+            if ($path -eq '/sync/probe') { Sp-SReply $res $x 200 $probe; continue }
+            if ($path -eq '/sync/job') {
                 $c = Get-Cfg
-                if ($c.accept -eq '0' -or $c.open -eq '0') { Json $res 403 @{ error = 'NOT_ACCEPTING' }; continue }
-                $mj = $null; try { $mj = $SpUtf8.GetString([Convert]::FromBase64String([string]$req.Headers['X-Job'])) | ConvertFrom-Json } catch {}
-                $ext = if ($mj) { [string]$mj.ext } else { '' }
-                if ($ext -notin 'pdf', 'png', 'jpg', 'gif') { Json $res 415 @{ error = "This type of file can't be printed." }; continue }
-                $s = Norm-Job $mj (Get-Caps $c.printer); if (-not $s) { Json $res 400 @{ error = 'Bad settings.' }; continue }
-                $tmp = Join-Path $up ((Sp-Rand 16) + '.part')
-                if (-not (Save-Body $req $tmp)) { Json $res 413 @{ error = 'File is bigger than 50 MB.' }; continue }
-                if (-not (Test-Magic $tmp $ext)) { Remove-Item $tmp -Force; Json $res 415 @{ error = "This type of file can't be printed." }; continue }
-                $x = Sp-Stations | Where-Object { $_.id -eq $from } | Select-Object -First 1
-                $via = (([string]$(if ($x) { $x.station } else { 'station' })) -replace '[^A-Za-z0-9_]+', '_'); if ($via.Length -gt 24) { $via = $via.Substring(0, 24) }
-                $src = ([string]$mj.from) -replace '[^0-9A-Fa-f.]', '_'
+                if ($c.accept -eq '0' -or $c.open -eq '0') { Sp-SJson $res $x 403 @{ error = 'NOT_ACCEPTING' }; continue }
+                $ext = if ($mt) { [string]$mt.ext } else { '' }
+                if ($ext -notin 'pdf', 'png', 'jpg', 'gif') { Sp-SJson $res $x 415 @{ error = "This type of file can't be printed." }; continue }
+                $s = Norm-Job $mt (Get-Caps $c.printer); if (-not $s) { Sp-SJson $res $x 400 @{ error = 'Bad settings.' }; continue }
+                $tmp = Join-Path $up ((Sp-Rand 16) + '.part'); [IO.File]::WriteAllBytes($tmp, $pl)
+                if (-not (Test-Magic $tmp $ext)) { Remove-Item $tmp -Force; Sp-SJson $res $x 415 @{ error = "This type of file can't be printed." }; continue }
+                $sx = Sp-Stations | Where-Object { $_.id -eq $from } | Select-Object -First 1
+                $via = (([string]$(if ($sx) { $sx.station } else { 'station' })) -replace '[^A-Za-z0-9_]+', '_'); if ($via.Length -gt 24) { $via = $via.Substring(0, 24) }
+                $src = ([string]$mt.from) -replace '[^0-9A-Fa-f.]', '_'
                 $base = '{0}-{1}-from{2}-via{3}-c{4}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), (Get-Random -Maximum 99999), $src, $via, $s.copies
                 $jid = Sp-Rand 8; $caps = Get-Caps $c.printer
-                $job = @{ name = ([string]$mj.name -replace '[\x00-\x1f]', ''); copies = $s.copies; pages = $s.pages; paper = $s.paper; orientation = $s.orientation; color = $s.color
+                $job = @{ name = ([string]$mt.name -replace '[\x00-\x1f]', ''); copies = $s.copies; pages = $s.pages; paper = $s.paper; orientation = $s.orientation; color = $s.color
                           duplex = $s.duplex; margins = $s.margins; scale = $s.scale; nup = $s.nup; hm = $caps.hm; via = 'station'; jid = $jid; sheets = $s.sheets }
                 $ahead = (Waiting) + (Spool-Count $c)
                 Sp-JobSet $jid @{ state = 'queued'; station = (Sp-StationName $c); sid = (Sp-NodeId); sheets = $s.sheets; ahead = $ahead }
                 Add-Job $tmp ".$ext" $base $job $null $false
-                Json $res 200 @{ ok = $true; jid = $jid; ahead = $ahead }; continue
+                Sp-SJson $res $x 200 @{ ok = $true; jid = $jid; ahead = $ahead }; continue
             }
-            if ($m -eq 'GET' -and $path -match '^/sync/job/([0-9a-f]{16})$') {
+            if ($path -match '^/sync/job/([0-9a-f]{16})$') {
                 $j = Sp-JobGet $Matches[1]
-                if ($j) { Json $res 200 @{ state = [string]$j.state; ahead = [int]$j.ahead; err = [string]$j.err } } else { Json $res 404 @{ error = 'GONE' } }
+                if ($j) { Sp-SJson $res $x 200 @{ state = [string]$j.state; ahead = [int]$j.ahead; err = [string]$j.err } } else { Sp-SJson $res $x 404 @{ error = 'GONE' } }
                 continue
             }
-            if ($m -eq 'POST' -and $path -eq '/sync/convert') {
-                $c = Get-Cfg; $ext = ([string]$req.Headers['X-Ext']).ToLower()
-                if ($c.conv -eq '0' -or (Sp-LocalOffice) -notin 'office', 'lo') { Json $res 503 @{ error = 'NO_CONVERTER' }; continue }
-                if ($ext -notin $OfficeTypes) { Json $res 415 @{ error = "This type of file can't be printed." }; continue }
-                $rid = Sp-Rand 16; $f = Join-Path $up "$rid.$ext"
-                if (-not (Save-Body $req $f)) { Json $res 413 @{ error = 'File is bigger than 50 MB.' }; continue }
-                if (-not (Test-Magic $f $ext)) { Remove-Item $f -Force; Json $res 415 @{ error = "This type of file can't be printed." }; continue }
+            if ($path -eq '/sync/convert') {
+                $c = Get-Cfg; $ext = ([string]$(if ($mt) { $mt.ext })).ToLower()
+                if ($c.conv -eq '0' -or (Sp-LocalOffice) -notin 'office', 'lo') { Sp-SJson $res $x 503 @{ error = 'NO_CONVERTER' }; continue }
+                if ($ext -notin $OfficeTypes) { Sp-SJson $res $x 415 @{ error = "This type of file can't be printed." }; continue }
+                $rid = Sp-Rand 16; $f = Join-Path $up "$rid.$ext"; [IO.File]::WriteAllBytes($f, $pl)
+                if (-not (Test-Magic $f $ext)) { Remove-Item $f -Force; Sp-SJson $res $x 415 @{ error = "This type of file can't be printed." }; continue }
                 [IO.File]::WriteAllText((Join-Path $up "$rid.todo"), $ext)
-                Json $res 200 @{ rid = $rid }; continue
+                Sp-SJson $res $x 200 @{ rid = $rid }; continue
             }
-            if ($m -eq 'GET' -and $path -match '^/sync/converted/([0-9a-f]{32})$') {
+            if ($path -match '^/sync/converted/([0-9a-f]{32})$') {
                 $rid = $Matches[1]; $pdf = Join-Path $up "$rid.pdf"
-                if (Test-Path $pdf) { $d = [IO.File]::ReadAllBytes($pdf); Get-ChildItem $up -Filter "$rid.*" | Remove-Item -Force -EA SilentlyContinue; Send $res 200 'application/pdf' $d }
-                elseif (Test-Path (Join-Path $up "$rid.fail")) { Get-ChildItem $up -Filter "$rid.*" | Remove-Item -Force -EA SilentlyContinue; Json $res 410 @{ error = 'FAILED' } }
-                elseif (@(Get-ChildItem $up -Filter "$rid.*" -EA SilentlyContinue).Count) { Json $res 202 @{ state = 'converting' } }
-                else { Json $res 404 @{ error = 'GONE' } }
+                if (Test-Path $pdf) { $d = [IO.File]::ReadAllBytes($pdf); Get-ChildItem $up -Filter "$rid.*" | Remove-Item -Force -EA SilentlyContinue; Sp-SReply $res $x 200 $d }
+                elseif (Test-Path (Join-Path $up "$rid.fail")) { Get-ChildItem $up -Filter "$rid.*" | Remove-Item -Force -EA SilentlyContinue; Sp-SJson $res $x 410 @{ error = 'FAILED' } }
+                elseif (@(Get-ChildItem $up -Filter "$rid.*" -EA SilentlyContinue).Count) { Sp-SJson $res $x 202 @{ state = 'converting' } }
+                else { Sp-SJson $res $x 404 @{ error = 'GONE' } }
                 continue
             }
-            if ($m -eq 'POST' -and $path -eq '/sync/scan') {
-                $q = $null; try { $q = (Read-Body $req) | ConvertFrom-Json } catch {}
-                $n = Sp-ScanNorm $q (Sp-Scanners); if (-not $n.q) { Json $res 404 @{ error = $n.err }; continue }
+            if ($path -eq '/sync/scan') {
+                $n = Sp-ScanNorm $mt (Sp-Scanners); if (-not $n.q) { Sp-SJson $res $x 404 @{ error = $n.err }; continue }
                 $sid = Sp-Rand 8; Sp-ScanSet $sid @{ state = 'waiting'; target = (Sp-NodeId); q = $n.q }
-                Json $res 200 @{ sid = $sid }; continue
+                Sp-SJson $res $x 200 @{ sid = $sid }; continue
             }
-            if ($m -eq 'GET' -and $path -match '^/sync/scan/([0-9a-f]{16})(/file)?$') {
+            if ($path -match '^/sync/scan/([0-9a-f]{16})(/file)?$') {
                 $sid = $Matches[1]; $file = $Matches[2]; $j = Sp-ScanGet $sid
-                if (-not $j) { Json $res 404 @{ error = 'GONE' }; continue }
-                if (-not $file) { Json $res 200 @{ state = [string]$j.state; err = [string]$j.err; ext = [string]$j.ext; pages = [int]$j.pages }; continue }
+                if (-not $j) { Sp-SJson $res $x 404 @{ error = 'GONE' }; continue }
+                if (-not $file) { Sp-SJson $res $x 200 @{ state = [string]$j.state; err = [string]$j.err; ext = [string]$j.ext; pages = [int]$j.pages }; continue }
                 $f = Join-Path $SpScans "$sid.$($j.ext)"
-                if (-not (Test-Path $f)) { Json $res 404 @{ error = 'GONE' }; continue }
+                if (-not (Test-Path $f)) { Sp-SJson $res $x 404 @{ error = 'GONE' }; continue }
                 $d = [IO.File]::ReadAllBytes($f); Remove-Item $f, (Join-Path $SpScans "$sid.json") -Force -EA SilentlyContinue
-                Send $res 200 'application/octet-stream' $d; continue
+                Sp-SReply $res $x 200 $d; continue
             }
-            Json $res 404 @{ error = 'Not found' }; continue
+            Sp-SJson $res $x 404 @{ error = 'Not found' }; continue
         }
         if ($m -eq 'GET' -and $path -eq '/stations') {    # public: the stations a person can pick on the print page
             $c = Get-Cfg; $me = Sp-Self
@@ -317,6 +323,21 @@ while ($listener.IsListening) {
             $j = $null; if ($body) { $j = $body | ConvertFrom-Json }
             $c = Get-Cfg
             if ($path -eq '/admin/scan') { [IO.File]::WriteAllText((Join-Path $SpSync 'scan-now'), ''); Json $res 200 @{ ok = $true }; continue }
+            if ($path -eq '/admin/net') {    # public | private (create) | alone | join (token) | token (show one)
+                $do = [string]$j.do
+                if ($do -in 'public', 'alone') { Sp-SetNet $do ''; Json $res 200 @{ ok = $true } }
+                elseif ($do -eq 'private') { Sp-SetNet 'private' (Sp-Rand 32); Json $res 200 @{ ok = $true; token = (Sp-TokNew) } }
+                elseif ($do -eq 'token') { $t = Sp-TokNew; if ($t) { Json $res 200 @{ token = $t; left = 900 } } else { Json $res 400 @{ error = 'NOT_PRIVATE' } } }
+                elseif ($do -eq 'trust') {    # the computer was reinstalled: accept its new identity
+                    $id = [string]$j.id; if ($id -cnotmatch '^[0-9a-f]{32}$') { Json $res 400 @{ error = 'Bad settings.' }; continue }
+                    Sp-Locked { foreach ($n in 'pins.json', 'alerts.json') { $f = Join-Path $SpSync $n; $h = Sp-Hash (Sp-Read $f); if ($h.Contains($id)) { $h.Remove($id); Sp-Write $f $h } } }
+                    Remove-Item (Join-Path $SpSync "pairs\$id.json") -Force -EA SilentlyContinue; [IO.File]::WriteAllText((Join-Path $SpSync 'scan-now'), '')
+                    Json $res 200 @{ ok = $true }
+                }
+                elseif ($do -eq 'join') { $r = Sp-JoinNetwork ([string]$j.token); if ($r -eq 'ok') { Json $res 200 @{ ok = $true } } else { Json $res 400 @{ error = $r } } }
+                else { Json $res 400 @{ error = 'Bad settings.' } }
+                continue
+            }
             if ($path -eq '/admin/set') {
                 if ($null -ne $j.open) { $c.open = if ($j.open) { '1' } else { '0' } }
                 if ($null -ne $j.lang) { if ($j.lang -notin 'fa', 'en') { Json $res 400 @{ error = 'Unknown language.' }; continue }; $c.lang = $j.lang }
@@ -340,14 +361,6 @@ while ($listener.IsListening) {
                     $d = ([string]$j.domain).Trim().ToLower() -replace '^https?://', '' -replace '/.*$', ''
                     if ($d -and $d -notmatch '^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$') { Json $res 400 @{ error = 'DOMAIN_FORMAT' }; continue }
                     $c.domain = $d; $c.domainAt = [string](Sp-Now)
-                }
-                if ($null -ne $j.password) {
-                    $pw = [string]$j.password
-                    if ($pw -and $pw.Length -lt 8) { Json $res 400 @{ error = 'PW_SHORT' }; continue }
-                    Remove-Item (Join-Path $SpSync 'peers.json') -Force -EA SilentlyContinue
-                    Get-ChildItem $SpSt -File -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
-                    if ($pw) { Sp-Write (Join-Path $SpSync 'group.json') (Sp-Derive $pw); [IO.File]::WriteAllText((Join-Path $SpSync 'scan-now'), '') }
-                    else { Remove-Item (Join-Path $SpSync 'group.json') -Force -EA SilentlyContinue }
                 }
                 Sp-SaveCfg $c; Json $res 200 @{ ok = $true }
             }

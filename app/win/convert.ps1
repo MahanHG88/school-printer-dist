@@ -51,6 +51,7 @@ $job = {
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
 }
 
+$noticeSeen = [datetime]::MinValue
 while ($true) {
     try { [IO.File]::WriteAllText("$up\converter.alive", "$env:USERNAME $(Get-Date -Format o)") } catch {}
     foreach ($t in @(Get-ChildItem $up -Filter *.todo -EA SilentlyContinue)) {
@@ -78,5 +79,8 @@ while ($true) {
         if ($err) { [IO.File]::WriteAllText("$up\$id.fail", $err) } else { Move-Item $out "$up\$id.pdf" -Force }
         Remove-Item $claim -Force -EA SilentlyContinue
     }
+    $nf = "$up\main.notice"    # this PC became the main station: tell whoever sits at it (notice.ps1)
+    try { $f = Get-Item -LiteralPath $nf -EA Stop; if ($f.LastWriteTime -gt $noticeSeen) { $noticeSeen = $f.LastWriteTime
+        if (((Get-Date) - $f.LastWriteTime).TotalSeconds -lt 120) { Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$PSScriptRoot\notice.ps1`" -File `"$nf`"" } } } catch {}
     Start-Sleep -Milliseconds 700
 }

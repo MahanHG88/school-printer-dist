@@ -104,7 +104,7 @@ function Self-Status {
     $os = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
     $office = Sp-LocalOffice; $busy = @(Get-ChildItem $SpUp -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.todo', '.doing' }).Count
     $open = $c.open -ne '0'; $u = Sp-Read (Join-Path $SpSync 'uptime.json')
-    [ordered]@{ app = 'school-printer'; proto = 1; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.6.1'
+    [ordered]@{ app = 'school-printer'; proto = 2; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.7.0'
         open = $open; ready = ($open -and $pst -eq 'Normal'); accept = ($c.accept -ne '0'); printer = $pr; pstatus = $pst
         jobs = ($spool.Count + $inb.Count); queue = $sheets; color = [bool]$caps.color; duplex = [bool]$caps.duplex; papers = @($caps.papers)
         conv = [ordered]@{ ok = ($office -in 'office', 'lo'); kind = $office; busy = $busy; share = ($c.conv -ne '0') }
@@ -122,61 +122,43 @@ function Uptime-Tick {    # running time in 5-minute blocks, kept across restart
 }
 
 # ================================================================ finding stations
-function Scan-Targets {    # every address of this PC's networks (each at most a /22 = 1022 addresses)
-    $t = New-Object Collections.ArrayList; $seen = @{}
-    if ($env:SP_SCAN) { foreach ($x in $env:SP_SCAN.Split(',')) { $a = $x.Split(':'); [void]$t.Add(@($a[0], [int]$a[1])) }; return , $t }
-    foreach ($ip in Sp-LanIPs) {
-        $pre = [math]::Max(22, [int]$ip.PrefixLength); if ($pre -gt 30) { continue }
-        $b = ([Net.IPAddress]::Parse($ip.IPAddress)).GetAddressBytes(); [Array]::Reverse($b); $n = [BitConverter]::ToUInt32($b, 0)
-        $mask = [uint32]([math]::Pow(2, 32) - [math]::Pow(2, 32 - $pre)); $net = $n -band $mask; $cnt = [math]::Pow(2, 32 - $pre)
-        for ($k = 1; $k -lt $cnt - 1; $k++) {
-            $v = [BitConverter]::GetBytes([uint32]($net + $k)); [Array]::Reverse($v); $a = ([Net.IPAddress]::new($v)).ToString()
-            if ($a -ne $ip.IPAddress -and -not $seen[$a]) { $seen[$a] = 1; [void]$t.Add(@($a, $SpPort)) }
-        }
-    }
-    , $t
-}
-function Scan-Open($targets) {    # connect to 256 addresses at a time -> the ones that answer
-    $open = New-Object Collections.ArrayList
-    for ($i = 0; $i -lt $targets.Count; $i += 256) {
-        $items = @()
-        foreach ($t in $targets[$i..([math]::Min($i + 255, $targets.Count - 1))]) { $cl = New-Object Net.Sockets.TcpClient; $items += @{ c = $cl; t = $t; k = $cl.ConnectAsync([string]$t[0], [int]$t[1]) } }
-        try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($items | ForEach-Object { $_.k }), 1500) } catch {}
-        foreach ($it in $items) { if ($it.k.Status -eq 'RanToCompletion' -and $it.c.Connected) { [void]$open.Add($it.t) }; try { $it.c.Close() } catch {} }
-    }
-    , $open
-}
 function Find-Stations {    # -> Sync\peers.json (same password), Sync\others.json (School Printers with another password)
     $g = Sp-Group; if (-not $g) { return }
     $me = Sp-NodeId; $old = @{}; foreach ($x in Sp-Peers) { $old[[string]$x.id] = $x }
-    $found = @{}; $others = 0
-    $hosts = Scan-Open (Scan-Targets)
+    $found = @{}; $gone = @{}; $others = 0
+    $hosts = Sp-ScanOpen (Sp-ScanTargets)
     $calls = @(foreach ($h in $hosts) { $wc = New-Object Net.WebClient; @{ t = $h; wc = $wc; k = $wc.DownloadStringTaskAsync("http://$($h[0]):$($h[1])/sync/hello") } })
     if ($calls.Count) { try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($calls | ForEach-Object { $_.k }), 3000) } catch {} }
     foreach ($cl in $calls) {
         if ($cl.k.Status -ne 'RanToCompletion') { try { $cl.wc.CancelAsync() } catch {}; continue }
         $h = $null; try { $h = $cl.k.Result | ConvertFrom-Json } catch {}
         if (-not $h -or $h.app -ne 'school-printer' -or [string]$h.id -cnotmatch '^[0-9a-f]{32}$' -or $h.id -eq $me) { continue }
-        if ([string]$h.gid -eq $g.gid) { $found[[string]$h.id] = [ordered]@{ id = [string]$h.id; url = "http://$($cl.t[0]):$($cl.t[1])"; station = ([string]$h.station -replace '[\x00-\x1f<>"\\]', ''); seen = (Sp-Now) } }
-        else { $others++ }
+        if ([string]$h.gid -eq $g.gid) {
+            if (-not (Sp-PinOk $g ([string]$h.id) ([string]$h.pk) ([string]$h.pkmac))) { continue }    # not who it claims to be: ignore
+            $found[[string]$h.id] = [ordered]@{ id = [string]$h.id; url = "http://$($cl.t[0]):$($cl.t[1])"; pk = [string]$h.pk; station = ([string]$h.station -replace '[\x00-\x1f<>"\\]', ''); seen = (Sp-Now) }
+        }
+        else { $others++; $gone[[string]$h.id] = 1 }    # answered from another network: not ours any more
     }
-    foreach ($id in $old.Keys) { if (-not $found.ContainsKey($id) -and ((Sp-Now) - [int64]$old[$id].seen) -lt 600) { $found[$id] = $old[$id] } }    # missed one scan: keep 10 min
+    foreach ($id in $old.Keys) { if (-not $found.ContainsKey($id) -and -not $gone[$id] -and ((Sp-Now) - [int64]$old[$id].seen) -lt 600) { $found[$id] = $old[$id] } }    # missed one scan: keep 10 min
     $list = @($found.Values | Sort-Object { - [int64]$_.seen } | Select-Object -First ($SpMax - 1))
     Sp-Write (Join-Path $SpSync 'peers.json') $list
     Sp-Write (Join-Path $SpSync 'others.json') ([ordered]@{ n = $others; at = (Sp-Now) })
-    foreach ($x in $list) { if (-not $old.ContainsKey([string]$x.id)) { [void](Sp-Peer $x.url 'POST' '/sync/announce' $null $null 2000) } }    # new here: they look again at once
+    foreach ($x in $list) { if (-not $old.ContainsKey([string]$x.id)) { [void](Sp-Peer $x '/sync/announce' $null $null 2000) } }    # new here: they look again at once
 }
 function Poll-Stations {    # every station's /sync/status at once -> Sync\st\<id>.json (or .err)
     $g = Sp-Group; if (-not $g) { return }
-    $calls = @(foreach ($x in Sp-Peers) {
-        $wc = New-Object Net.WebClient; $h = Sp-SignHdr $g 'GET' '/sync/status'; foreach ($k in $h.Keys) { $wc.Headers.Add($k, $h[$k]) }
-        @{ x = $x; wc = $wc; k = $wc.DownloadDataTaskAsync("$($x.url)/sync/status") } })
+    $calls = @(foreach ($x in Sp-Peers) {    # encrypted POSTs, all at once
+        $sl = $null; try { $sl = Sp-Seal $x '/sync/status' $null $null } catch {}
+        if (-not $sl) { Sp-Write (Join-Path $SpSt "$($x.id).err") ([ordered]@{ at = (Sp-Now); err = 'UNREACHABLE' }); continue }
+        $wc = New-Object Net.WebClient; foreach ($k in $sl.hdr.Keys) { $wc.Headers.Add($k, $sl.hdr[$k]) }
+        @{ x = $x; wc = $wc; sl = $sl; k = $wc.UploadDataTaskAsync("$($x.url)/sync/status", 'POST', [byte[]]$sl.ct) } })
     if (-not $calls.Count) { return }
     try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($calls | ForEach-Object { $_.k }), 3500) } catch {}
     foreach ($cl in $calls) {
         $id = [string]$cl.x.id; $err = 'UNREACHABLE'
         if ($cl.k.Status -eq 'RanToCompletion') {
-            $txt = $SpUtf8.GetString($cl.k.Result); $s = $null; try { $s = $txt | ConvertFrom-Json } catch {}
+            $pl = $null; try { $pl = Sp-Unseal $cl.sl 200 ([byte[]]$cl.k.Result) ([string]$cl.wc.ResponseHeaders['X-Sync-Mac']) } catch {}
+            $txt = if ($null -ne $pl) { $SpUtf8.GetString($pl) } else { '' }; $s = $null; try { $s = $txt | ConvertFrom-Json } catch {}
             if ($s -and [string]$s.id -eq $id) { [IO.File]::WriteAllText((Join-Path $SpSt "$id.json.tmp"), "{`"at`":$(Sp-Now),`"s`":$txt}", $SpUtf8); Move-Item (Join-Path $SpSt "$id.json.tmp") (Join-Path $SpSt "$id.json") -Force; continue }
             $err = 'BAD_REPLY'
         } elseif ($cl.k.Status -eq 'Faulted') {
@@ -191,10 +173,10 @@ function Poll-Stations {    # every station's /sync/status at once -> Sync\st\<i
 function Bw-Now { $h = Sp-Read (Join-Path $SpSync 'bw.json'); if (-not $h) { return 0 }; $v = @($h | Sort-Object { [double]$_ }); [double]$v[[math]::Floor(($v.Count - 1) / 2)] }
 function Measure-Bw {    # fetch 1 MB from a random station; keep the last 5 results (the median goes into the status)
     $on = @(Sp-Stations | Where-Object { $_.online }); if (-not $on.Count) { return $false }
-    $x = $on[(Get-Random -Maximum $on.Count)]; $sw = [Diagnostics.Stopwatch]::StartNew()
-    $r = Sp-Peer $x.url 'GET' '/sync/probe' $null $null 10000
+    $x = $on[(Get-Random -Maximum $on.Count)]
+    $r = Sp-Peer $x '/sync/probe' $null $null 10000
     if ($r.code -ne 200 -or $r.bytes.Length -lt 1000000) { return $false }
-    $mbps = $r.bytes.Length * 8 / 1e6 / [math]::Max(0.001, $sw.Elapsed.TotalSeconds)
+    $mbps = [math]::Min(10000, $r.bytes.Length * 8 / 1e6 / [math]::Max(0.001, [double]$r.secs))    # the transfer only, not the decryption
     $f = Join-Path $SpSync 'bw.json'; $v = @(Sp-Read $f) | Where-Object { $null -ne $_ }; $v = @($v) + [math]::Round($mbps, 1); if ($v.Count -gt 5) { $v = $v[($v.Count - 5)..($v.Count - 1)] }
     Sp-Write $f @($v); $true
 }
@@ -215,10 +197,40 @@ function Elect {    # the main station, the same way on every station (see elect
     $votes = @{}; foreach ($k in $c) { $v = [string]$k.s.lead; $votes[$v] = [int]$votes[$v] + 1 }
     $keep = $null; $kv = 0
     foreach ($k in (& $order $c)) { $n = [int]$votes[$k.id]; if ($n -ge 2 -and $n -gt $kv) { $keep = $k; $kv = $n } }
-    $l = if ($keep -and $keep.score -ge $best.score * 0.75) { $keep } else { $best }
+    # a station joined (or this one did) in the last 90 seconds: a fresh election, the best station wins outright;
+    # otherwise keep the main station most stations follow while it is not clearly worse (no flapping)
+    $fresh = $false; $now = Sp-Now
+    if ($now - $script:joinedAt -lt 90) { $fresh = $true }
+    foreach ($k in $c) { if ($script:since.ContainsKey($k.id) -and $now - $script:since[$k.id] -lt 90) { $fresh = $true } }
+    $l = if (-not $fresh -and $keep -and $keep.score -ge $best.score * 0.75) { $keep } else { $best }
+    # every 5 minutes (the same 20 seconds on every station's clock) a review with live load: a main station that has
+    # become busy (another program started) hands over to a station at least half a point better
+    if ($now % 300 -lt 20 -and $best.rank -gt $l.rank) { $l = $best }
     $cur = Sp-Read (Join-Path $SpSync 'leader.json')
     if (-not $cur -or [string]$cur.id -ne $l.id -or [string]$cur.url -ne $l.url) { Sp-Write (Join-Path $SpSync 'leader.json') ([ordered]@{ id = $l.id; url = $l.url }) }
     $l.id
+}
+# who is online since when (seen from here): a station that (re)joins starts a fresh election
+$script:since = @{}; $script:joinedAt = Sp-Now; $script:sinceGid = ''
+function Track-Online {
+    $g = Sp-Group; $gid = if ($g) { [string]$g.gid } else { '' }
+    if ($gid -ne $script:sinceGid) { $script:since = @{}; $script:joinedAt = Sp-Now; $script:sinceGid = $gid }    # another network: everyone is new
+    $on = @{}; if ($g) { foreach ($x in @(Sp-Stations | Where-Object { $_.online })) { $on[$x.id] = 1 } }
+    foreach ($id in @($script:since.Keys)) { if (-not $on[$id]) { $script:since.Remove($id) } }
+    foreach ($id in $on.Keys) { if (-not $script:since.ContainsKey($id)) { $script:since[$id] = Sp-Now } }
+    $on.Count
+}
+# "this PC is now the main station": a pop-up on the signed-in user's screen (convert.ps1 shows Uploads\main.notice)
+$script:otherLead = $true; $script:mainSince = 0
+function Main-Notice([string]$lead, [int]$online) {
+    if (-not (Sp-Group) -or $online -lt 1) { return }    # alone: every PC is its own main station, nothing to tell
+    if ($lead -ne (Sp-NodeId)) { $script:otherLead = $true; $script:mainSince = 0; return }
+    if (-not $script:mainSince) { $script:mainSince = Sp-Now }
+    if ((Sp-Now) - $script:mainSince -lt 20) { return }    # settled for 20 seconds first (no pop-up while stations start up)
+    if (-not $script:otherLead) { return }    # still the same turn as main station (a station flickered): no second pop-up
+    $script:otherLead = $false
+    if ($env:SP_NOPOPUP) { return }
+    try { Sp-Write (Join-Path $SpUp 'main.notice') ([ordered]@{ at = (Sp-Now); lang = [string](Sp-Cfg).lang; url = (Sp-MyUrl) }) } catch {}
 }
 $script:aliasOn = $false
 function Alias([bool]$on) {    # schoolprinter.local -> this PC while it is the main station (mDNS, Windows 10 1809+)
@@ -285,7 +297,7 @@ function Send-Outbox {
         if ($x -and $x.online) {
             $meta = [ordered]@{}; foreach ($k in 'copies', 'pages', 'paper', 'orientation', 'color', 'duplex', 'margins', 'scale', 'nup', 'land', 'pw', 'ph', 'name', 'sheets', 'from') { $meta[$k] = $j.$k }
             $meta.ext = [IO.Path]::GetExtension($doc).TrimStart('.')
-            $r = Sp-Peer $x.url 'POST' '/sync/job' @{ 'X-Job' = [Convert]::ToBase64String($SpUtf8.GetBytes((ConvertTo-Json -Compress -InputObject $meta))) } ([IO.File]::ReadAllBytes($doc)) 60000
+            $r = Sp-Peer $x '/sync/job' $meta ([IO.File]::ReadAllBytes($doc)) 60000
             $a = if ($r.code -eq 200) { Sp-Json $r } else { $null }
             if ($a -and [string]$a.jid -cmatch '^[0-9a-f]{16}$') {
                 $ok = $true
@@ -319,7 +331,7 @@ function Follow-Jobs {    # mirror jobs that went to another station; live "jobs
                 continue
             }
             if ([int64]$j.lost) { Sp-JobSet $jid @{ lost = 0 } }
-            $r = Sp-Peer ([string]$j.url) 'GET' "/sync/job/$($j.rjid)" $null $null 4000; $q = if ($r.code -eq 200) { Sp-Json $r } else { $null }
+            $r = Sp-Peer $x "/sync/job/$($j.rjid)" $null $null 4000; $q = if ($r.code -eq 200) { Sp-Json $r } else { $null }
             if (-not $q) { continue }
             if ($q.state -eq 'failed' -and $held) { Reroute $j $(if ($q.err -eq 'PRINTER_ERROR') { 'PRINTER_ERROR' } else { 'FAILED' }); continue }
             if ($q.state -in 'queued', 'printing', 'done', 'failed' -and ($q.state -ne $j.state -or [int]$q.ahead -ne [int]$j.ahead)) {
@@ -370,7 +382,7 @@ function Remote-Convert {
         $id = $f.BaseName; $a = ([IO.File]::ReadAllText($f.FullName)).Trim().Split(' '); $ext = $a[1]
         $x = Sp-Stations | Where-Object { $_.id -eq $a[0] -and $_.online } | Select-Object -First 1
         $src = Join-Path $SpUp "$id.$ext"; $r = $null
-        if ($x -and (Test-Path $src)) { $r = Sp-Peer $x.url 'POST' '/sync/convert' @{ 'X-Ext' = $ext } ([IO.File]::ReadAllBytes($src)) 60000 }
+        if ($x -and (Test-Path $src)) { $r = Sp-Peer $x '/sync/convert' @{ ext = $ext } ([IO.File]::ReadAllBytes($src)) 60000 }
         $q = if ($r -and $r.code -eq 200) { Sp-Json $r } else { $null }
         if ($q -and [string]$q.rid -cmatch '^[0-9a-f]{32}$') { [IO.File]::WriteAllText((Join-Path $SpUp "$id.rid"), "$($x.id) $($q.rid) $ext $(Sp-Now)") }
         else { Conv-Here $id $ext }
@@ -379,7 +391,7 @@ function Remote-Convert {
     foreach ($f in @(Get-ChildItem $SpUp -Filter *.rid -EA SilentlyContinue)) {    # <id>.rid = "<station id> <remote id> <ext> <since>"
         $id = $f.BaseName; $a = ([IO.File]::ReadAllText($f.FullName)).Trim().Split(' ')
         $x = Sp-Stations | Where-Object { $_.id -eq $a[0] } | Select-Object -First 1
-        $r = if ($x) { Sp-Peer $x.url 'GET' "/sync/converted/$($a[1])" $null $null 30000 } else { @{ code = 0 } }
+        $r = if ($x) { Sp-Peer $x "/sync/converted/$($a[1])" $null $null 30000 } else { @{ code = 0 } }
         if ($r.code -eq 200 -and $r.bytes.Length -gt 4 -and $r.bytes[0] -eq 0x25 -and $r.bytes[1] -eq 0x50) {
             [IO.File]::WriteAllBytes((Join-Path $SpUp "$id.pdf.part"), $r.bytes); Move-Item (Join-Path $SpUp "$id.pdf.part") (Join-Path $SpUp "$id.pdf") -Force
             Remove-Item -LiteralPath $f.FullName -Force -EA SilentlyContinue
@@ -404,7 +416,7 @@ function Run-Scans {
             } else {
                 $x = Sp-Stations | Where-Object { $_.id -eq [string]$j.target -and $_.online } | Select-Object -First 1
                 if (-not $x) { Sp-ScanSet $sid @{ state = 'failed'; err = 'STATION_OFFLINE'; run = 1 }; continue }
-                $r = Sp-Peer $x.url 'POST' '/sync/scan' $null ($SpUtf8.GetBytes((ConvertTo-Json -Compress -InputObject $j.q))) 10000
+                $r = Sp-Peer $x '/sync/scan' $j.q $null 10000
                 $a = if ($r.code -eq 200) { Sp-Json $r } else { $null }
                 if ($a -and [string]$a.sid -cmatch '^[0-9a-f]{16}$') { Sp-ScanSet $sid @{ run = 1; rsid = [string]$a.sid; url = $x.url } }
                 else { $e = Sp-Json $r; Sp-ScanSet $sid @{ state = 'failed'; err = $(if ($e -and $e.error) { [string]$e.error } else { 'SCAN_FAILED' }); run = 1 } }
@@ -413,15 +425,15 @@ function Run-Scans {
         }
         if ($j.pid -and -not (Get-Process -Id ([int]$j.pid) -EA SilentlyContinue)) { $k = Sp-ScanGet $sid; if ($k.state -notin 'ready', 'failed') { Sp-ScanSet $sid @{ state = 'failed'; err = 'SCAN_FAILED' } }; continue }    # scan process died
         if ($j.rsid) {    # scanning on another station: follow it, then fetch the file
-            $x = Sp-Stations | Where-Object { $_.url -eq [string]$j.url } | Select-Object -First 1
+            $x = Sp-Stations | Where-Object { $_.id -eq [string]$j.target } | Select-Object -First 1
             if (-not $x -or -not $x.online) {    # the scanner's station went quiet in the middle: 20 seconds, then tell the page
                 if (-not [int64]$j.lost) { Sp-ScanSet $sid @{ lost = (Sp-Now) } } elseif ((Sp-Now) - [int64]$j.lost -ge 20) { Sp-ScanSet $sid @{ state = 'failed'; err = 'STATION_LOST' } }
                 continue
             }
-            $r = Sp-Peer ([string]$j.url) 'GET' "/sync/scan/$($j.rsid)" $null $null 4000; $q = if ($r.code -eq 200) { Sp-Json $r } else { $null }
+            $r = Sp-Peer $x "/sync/scan/$($j.rsid)" $null $null 4000; $q = if ($r.code -eq 200) { Sp-Json $r } else { $null }
             if (-not $q) { if (((Sp-Now) - [int64]$j.at) -gt 900 -or $r.code -eq 404) { Sp-ScanSet $sid @{ state = 'failed'; err = 'SCAN_FAILED' } }; continue }
             if ($q.state -eq 'ready') {
-                $d = Sp-Peer ([string]$j.url) 'GET' "/sync/scan/$($j.rsid)/file" $null $null 120000
+                $d = Sp-Peer $x "/sync/scan/$($j.rsid)/file" $null $null 120000
                 if ($d.code -eq 200 -and $d.bytes.Length) { [IO.File]::WriteAllBytes((Join-Path $SpScans "$sid.$($q.ext)"), $d.bytes); Sp-ScanSet $sid @{ state = 'ready'; ext = [string]$q.ext; size = $d.bytes.Length; pages = [int]$q.pages } }
                 else { Sp-ScanSet $sid @{ state = 'failed'; err = 'SCAN_FAILED' } }
             } elseif ($q.state -eq 'failed') { Sp-ScanSet $sid @{ state = 'failed'; err = [string]$q.err } }
@@ -441,24 +453,31 @@ function Clean-Sync {
     $old = (Get-Date).AddDays(-1)
     Get-ChildItem $SpJobs, $SpSt -File -EA SilentlyContinue | Where-Object { $_.LastWriteTime -lt $old } | Remove-Item -Force -EA SilentlyContinue
     Get-ChildItem $SpScans -File -EA SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-30) } | Remove-Item -Force -EA SilentlyContinue
+    Get-ChildItem (Join-Path $SpSync 'nonces') -File -EA SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } | Remove-Item -Force -EA SilentlyContinue    # older than 5 minutes is refused anyway
     $ids = @{}; foreach ($x in Sp-Peers) { $ids[[string]$x.id] = 1 }
     Get-ChildItem $SpSt -File -EA SilentlyContinue | Where-Object { $_.BaseName -match '^([0-9a-f]{32})' -and -not $ids[$Matches[1]] } | Remove-Item -Force -EA SilentlyContinue
 }
 
 # ================================================================ main loop
-$lastFind = [datetime]::MinValue; $lastDet = [datetime]::MinValue; $lastBw = [datetime]::MinValue; $lastClean = Get-Date
+$lastFind = [datetime]::MinValue; $started = Get-Date; $lastDet = [datetime]::MinValue; $lastBw = [datetime]::MinValue; $lastClean = Get-Date
 while ($true) {
     $t0 = Get-Date
     try { Uptime-Tick } catch {}
     if (($t0 - $lastDet).TotalSeconds -ge 60) { $lastDet = $t0; try { Find-Scanners } catch {} }
     try { Sp-Write (Join-Path $SpSync 'self.json') (Self-Status) } catch {}
-    $lead = (Sp-NodeId); try { $lead = Elect } catch {}
-    Alias ($lead -eq (Sp-NodeId) -and [bool](Sp-Group))
     if (Sp-Group) {
         $now = Join-Path $SpSync 'scan-now'
-        if (($t0 - $lastFind).TotalSeconds -ge 60 -or (Test-Path $now)) { Remove-Item $now -Force -EA SilentlyContinue; $lastFind = $t0; try { Find-Stations } catch {} }
+        $every = if (((Get-Date) - $started).TotalSeconds -lt 180) { 15 } else { 60 }    # the first 3 minutes: look often, stations start at different times
+        if (($t0 - $lastFind).TotalSeconds -ge $every -or (Test-Path $now)) { Remove-Item $now -Force -EA SilentlyContinue; $lastFind = $t0; try { Find-Stations } catch {} }
         try { Poll-Stations } catch {}
         try { Adopt-Domain } catch {}
+    }
+    # right after the poll: a main station that just went quiet is replaced within one round (2-3 seconds)
+    $online = 0; try { $online = Track-Online } catch {}
+    $lead = (Sp-NodeId); try { $lead = Elect } catch {}
+    Alias ($lead -eq (Sp-NodeId) -and [bool](Sp-Group))
+    try { Main-Notice $lead $online } catch {}
+    if (Sp-Group) {
         if (($t0 - $lastBw).TotalSeconds -ge 300) { $ok = $false; try { $ok = Measure-Bw } catch {}; $lastBw = if ($ok) { $t0 } else { $t0.AddSeconds(-280) } }    # failed: again in 20 s
     }
     try { Send-Outbox } catch {}

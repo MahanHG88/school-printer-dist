@@ -200,3 +200,9 @@ table.stations{min-width:760px}table.stations td{vertical-align:top}table.statio
 .pmd b.pickup{color:#fff}
 .domain{display:grid;gap:8px;padding:14px;border-radius:16px;background:var(--glass2);border:1px solid var(--line)}.switch:disabled{opacity:.4}
 .netcard>*{min-width:0}.netcard .tablewrap{max-width:100%}
+/* admin: public / private / alone */
+.netopts{margin:2px 0}.netopts .opt{padding:12px 14px}
+.tokbox,.joinbox{display:grid;gap:8px;padding:14px;border-radius:16px;background:var(--glass2);border:1px solid var(--line)}
+.tokv{font:700 clamp(24px,7vw,34px)/1.1 ui-monospace,"Cascadia Mono",Consolas,monospace;letter-spacing:.06em;text-align:center;padding:12px;border-radius:14px;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:0 14px 30px -14px var(--acc);user-select:all}
+.alerts{display:grid;gap:8px;background:color-mix(in srgb,var(--err) 10%,transparent);border-color:color-mix(in srgb,var(--err) 35%,transparent)}.alerts .alert{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}

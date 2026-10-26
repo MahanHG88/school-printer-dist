@@ -7,7 +7,7 @@
 # Offline:         download SchoolPrinter-windows.zip, unzip it, double-click Install.cmd
 #
 # What it does (undo: the same commands with uninstall.ps1, or Uninstall.cmd from the zip):
-#   - C:\ProgramData\MacPrint\  PrintServer.ps1, watch.ps1, convert.ps1, sync.ps1, syncd.ps1, dns.ps1, control.ps1, web\,
+#   - C:\ProgramData\MacPrint\  PrintServer.ps1, watch.ps1, convert.ps1, sync.ps1, syncd.ps1, dns.ps1, control.ps1, notice.ps1, web\,
 #     config.txt, Inbox\, Uploads\, Outbox\, Sync\ (printing network: only SYSTEM and administrators can read it)
 #   - scheduled tasks "MacPrint Web", "MacPrint Inbox", "MacPrint Sync", "MacPrint DNS" (SYSTEM, at startup, auto-restart)
 #   - scheduled task "MacPrint Convert" (whoever signs in; turns Word/Excel/PowerPoint into PDF with Microsoft Office)
@@ -17,31 +17,32 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.6.1'
-    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.1/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+    $Version = '1.7.0'
+    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.0/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Pack    = ''          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
     $Files   = [ordered]@{    # path under /app/  =  SHA-256, size   (filled in by build.sh)
-        'win/PrintServer.ps1' = @('0BA54A9DA1506984AD92C41B23F37109B8BB4E36352D8260586584A9A368FE14', 35855)
+        'win/PrintServer.ps1' = @('8D6AA54580C5E0D5BC74F3E6E9E21185FF6E981BBC6F152E6BB547D13C3AF400', 37420)
         'win/watch.ps1' = @('01B558F33297CCF1FFE67EA6FF6DE2376014EC1032876CA900D2C507D35A229A', 13388)
-        'win/convert.ps1' = @('83953584F955079F64465228D6369C2F681C0EF9FC7E15CFC5BBB0813717696A', 5280)
+        'win/convert.ps1' = @('B927921C187A6DB910CC22ADFB8D504EEEBD23BE555FC18C43FEB6D9072ECCA5', 5781)
         'win/ipp.ps1' = @('037153FEF862F76BBF72CB0AE6D1B2BBF695E5F45E6069EB2292D659FA3CF6FA', 23063)
-        'win/sync.ps1' = @('B63C27AB60721D58C97540D118F8EEB4E8E00528967AE1D9C5CAAEC64F4DF759', 26065)
-        'win/syncd.ps1' = @('2023A938B6941982DB075D92AEE3D643589D37FE17597A595586165BA0342507', 36783)
+        'win/sync.ps1' = @('92AD646970E7B812404BB2DBEA1CC577D552A1482B7252580C93CE6AE4D2E4E9', 44941)
+        'win/syncd.ps1' = @('AC3E396CC6C89D0316BBE567473C898C0C94BE598475DC8AC1D3DE94305EC0AC', 38584)
         'win/dns.ps1' = @('409515475605CF8E4B245B8B593BB2D6FE86708017C774DC55A886139CBCA9EB', 5293)
         'win/control.ps1' = @('4B98219C7F23117F8CEB00EFBBE863D37253A07105C60C3F837E5EB758E560CF', 1863)
-        'web/admin.html' = @('DCBC3FE06B023C8536ECFDC3F475E8E1D8A35691AA0E19B1181B01AB1112577E', 7570)
-        'web/admin.js' = @('B9DAC0CA67D2FAC7384A82FF9512740CE164DA15DDA7C82E2EEEF52731A79C9E', 12042)
-        'web/app.css' = @('5D12D643F632D022034EAB5693578C9730D07DAE3FD3F633DBFBBCBB883F6ADA', 22194)
-        'web/i18n.js' = @('6E52BB722C168AC0BFDEA0D85D2E7A49D8D6A14F6783CD26063BF11BD49E0543', 31241)
+        'win/notice.ps1' = @('605B260242A2049307402C93E557C3D1087848FFDDD6B5650FCBE292DEBF692F', 3349)
+        'web/admin.html' = @('F4ECC01B695A7BB7123397C882A94442154D76AE45A3EE6664999B56065D45A0', 9143)
+        'web/admin.js' = @('FEC51E1747803A5A061E42D62848DFF524ADEC8D7E1B396867763E145BC99C22', 13210)
+        'web/app.css' = @('48DCBC344EFEA83DE87863800C3926AA8AE79C1093AC21D5FA14F141CC81E31A', 22947)
+        'web/i18n.js' = @('67ABEA60BCA5DA75DABF026EF3FF1F8419EA2A3AA4A3CD8A198CA526F21C3EA4', 37753)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('4A18E129F79950A074A420643114434646F411A2A7496FF85D5D9F4775F31347', 13876)
+        'web/print.html' = @('91604A03DFE17F94151E0A155F06404B7004BA8A66DFAF6C13B1ABA4CE2C56E5', 13876)
         'web/print.js' = @('42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86', 35529)
         'web/vazirmatn.woff2' = @('4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92', 111152)
     }
-    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.6.1/install-ir.ps1'))"
+    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.0/install-ir.ps1'))"
 
     # ================================================================ look: live dashboard
     $E = [char]27
