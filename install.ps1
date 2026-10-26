@@ -17,7 +17,7 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.7.0'
+    $Version = '1.7.1'
     $Base    = 'https://print.mahanmirzaee.com/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Pack    = ''          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
     $Root    = 'C:\ProgramData\MacPrint'
@@ -28,17 +28,17 @@ function Install-SchoolPrinter {
         'win/convert.ps1' = @('B927921C187A6DB910CC22ADFB8D504EEEBD23BE555FC18C43FEB6D9072ECCA5', 5781)
         'win/ipp.ps1' = @('037153FEF862F76BBF72CB0AE6D1B2BBF695E5F45E6069EB2292D659FA3CF6FA', 23063)
         'win/sync.ps1' = @('92AD646970E7B812404BB2DBEA1CC577D552A1482B7252580C93CE6AE4D2E4E9', 44941)
-        'win/syncd.ps1' = @('AC3E396CC6C89D0316BBE567473C898C0C94BE598475DC8AC1D3DE94305EC0AC', 38584)
+        'win/syncd.ps1' = @('6879770125EB0CE8CFC05028D6E90FCDDB41D99E1B17D3B34D5F4424BAFD716E', 38584)
         'win/dns.ps1' = @('409515475605CF8E4B245B8B593BB2D6FE86708017C774DC55A886139CBCA9EB', 5293)
         'win/control.ps1' = @('4B98219C7F23117F8CEB00EFBBE863D37253A07105C60C3F837E5EB758E560CF', 1863)
         'win/notice.ps1' = @('605B260242A2049307402C93E557C3D1087848FFDDD6B5650FCBE292DEBF692F', 3349)
-        'web/admin.html' = @('F4ECC01B695A7BB7123397C882A94442154D76AE45A3EE6664999B56065D45A0', 9143)
+        'web/admin.html' = @('A7FB555A5678C656B26257C109D8EDCE2CC870D08771A7B0EB1524623310BEA2', 9143)
         'web/admin.js' = @('FEC51E1747803A5A061E42D62848DFF524ADEC8D7E1B396867763E145BC99C22', 13210)
         'web/app.css' = @('48DCBC344EFEA83DE87863800C3926AA8AE79C1093AC21D5FA14F141CC81E31A', 22947)
         'web/i18n.js' = @('67ABEA60BCA5DA75DABF026EF3FF1F8419EA2A3AA4A3CD8A198CA526F21C3EA4', 37753)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('91604A03DFE17F94151E0A155F06404B7004BA8A66DFAF6C13B1ABA4CE2C56E5', 13876)
+        'web/print.html' = @('999A32400F8713BA011B0DE3423370F6C0B7349EF1EB67E78B76E1AE9362C070', 13876)
         'web/print.js' = @('42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86', 35529)
         'web/vazirmatn.woff2' = @('4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92', 111152)
     }
@@ -67,7 +67,7 @@ function Install-SchoolPrinter {
     $Steps = [ordered]@{}
     function Add-Step($id, $title, $est) { $Steps[$id] = @{ title = $title; est = [double]$est; state = 'pending'; detail = ''; t = $null; el = 0.0; frac = 0.0 } }
     Add-Step 'check'    'Check this PC'                   0.5
-    Add-Step 'net'      'Measure network speed'           1.0
+    if ($Pack) { Add-Step 'net' 'Download the package'      3.0 }    # Runflare: every file in one download
     Add-Step 'files'    'Download & verify files'         5.0
     Add-Step 'printer'  'Choose the printer'              1.0
     Add-Step 'network'  'Open the local network'          2.0
@@ -75,7 +75,7 @@ function Install-SchoolPrinter {
     Add-Step 'office'   'Word / Excel / PowerPoint'       1.5
     Add-Step 'shortcut' 'Desktop shortcuts'               0.4
     Add-Step 'verify'   'Check it answers'                2.0
-    $script:plan = @("$($MU)Network    $R$($D)measuring...$R", "$($MU)Download   $R$D-$R", "$($MU)Estimate   $R$D-$R")
+    $script:plan = @("$($MU)Download   $R$D-$R", "$($MU)Estimate   $R$D-$R")
     $script:t0 = Get-Date; $script:drawn = 0; $script:last = [datetime]::MinValue; $script:frame = 0
     $spin = @('|', '/', '-', '\')
 
@@ -175,16 +175,6 @@ function Install-SchoolPrinter {
         }
         @{ bytes = $script:packGot; lat = $lat; kbps = ($script:packGot / 1024) / [math]::Max(0.001, $secs); total = $secs }
     }
-    function Measure-Net {    # exact: bytes of a 128 KB test file / transfer time, plus time to first byte
-        $sw = [Diagnostics.Stopwatch]::StartNew()
-        $req = [Net.HttpWebRequest]::Create("$Base/probe.bin?t=$([guid]::NewGuid().ToString('N'))")
-        $req.UserAgent = "SchoolPrinterInstaller/$Version"
-        $res = $req.GetResponse(); $lat = $sw.Elapsed.TotalSeconds
-        $in = $res.GetResponseStream(); $buf = New-Object byte[] 65536; $n = 0
-        while (($r = $in.Read($buf, 0, $buf.Length)) -gt 0) { $n += $r }
-        $in.Close(); $res.Close(); $tot = $sw.Elapsed.TotalSeconds
-        @{ bytes = $n; lat = $lat; kbps = ($n / 1024) / [math]::Max(0.001, $tot - $lat); total = $tot }
-    }
 
     $here = $null
     if ($PSCommandPath) { $here = Split-Path -Parent $PSCommandPath }
@@ -224,7 +214,7 @@ function Install-SchoolPrinter {
     $allBytes = 0; foreach ($k in $Files.Keys) { $allBytes += $Files[$k][1] }
     Finish 'check' ("{0:N1} GB free on C:  $dot  PowerShell {1}" -f ($free / 1024), $PSVersionTable.PSVersion.ToString(2))
 
-    # ---------------------------------------------------------------- 2. network speed + plan
+    # ---------------------------------------------------------------- 2. Runflare package (other sources: no speed test - the download shows its own speed)
     $net = $null
     if ($Pack -and $need.Count -and -not ($here -and (Test-Path (Join-Path $here 'win')))) {    # Runflare: the whole package in one download
         Begin 'net' 'downloading every file in one package (Runflare mirror)'
@@ -234,23 +224,15 @@ function Install-SchoolPrinter {
         $here = Join-Path $pdir 'package\app'
         Finish 'net' ("{0:N1} KB/s  $dot  {1} in one package  $dot  every file is checked next" -f $net.kbps, (KB $net.bytes))
     }
+    elseif ($Steps.Contains('net')) { Begin 'net'; Finish 'net' $(if ($need.Count) { 'offline install - using the files next to this script' } else { 'skipped - all files already up to date' }) }
     $local = $here -and (Test-Path (Join-Path $here 'win'))
-    if ($net) { }
-    elseif ($local) { Begin 'net'; Finish 'net' 'offline install - using the files next to this script' }
-    elseif ($need.Count -eq 0) { Begin 'net'; Finish 'net' 'skipped - all files already up to date' }
-    else {
-        Begin 'net' 'downloading a 128 KB test file'
-        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $net = Measure-Net }
-        catch { Fail 'net' 'Could not reach the download server (direct from print.mahanmirzaee.com).' 'Plan B: download SchoolPrinter-windows.zip from print.mahanmirzaee.com on any device, copy it here (a USB stick is fine), unzip it and double-click Install.cmd.'; return }
-        Finish 'net' ("{0:N1} KB/s  $dot  {1:N0} ms latency  $dot  measured with {2}" -f $net.kbps, ($net.lat * 1000), (KB $net.bytes))
-    }
-    $Steps.files.est = if ($net) { ($needBytes / 1024) / [math]::Max(1, $net.kbps) + $need.Count * $net.lat + 0.3 } elseif ($need.Count) { 0.5 } else { 0.2 }
+    # no speed test: until the download starts, assume ~400 KB/s; then the progress bar follows the real download
+    $Steps.files.est = if ($local -or -not $need.Count) { 0.5 } else { ($needBytes / 1024) / 400 + $need.Count * 0.05 }
     $totalEst = 0.0; foreach ($s in $Steps.Values) { $totalEst += $s.est }
-    $netLine = if ($net) { "$B$('{0:N1}' -f $net.kbps) KB/s$R  $D$dot  $('{0:N0}' -f ($net.lat * 1000)) ms latency$R" } elseif ($local) { "$($D)offline (zip)$R" } else { "$($D)not needed$R" }
+    $srcNote = if ($net) { "$D  from Runflare in one package$R" } elseif ($local) { "$D  offline (zip)$R" } else { '' }
     $script:plan = @(
-        "$($MU)Network    $R$netLine",
-        "$($MU)Download   $R$B$(KB $needBytes)$R$D  in $($need.Count) of $($Files.Count) files  $dot  $(KB $allBytes) in total$R",
-        "$($MU)Estimate   $R$B~$(Secs $totalEst)$R$D  for all $($Steps.Count) steps$R")
+        "$($MU)Download   $R$B$(KB $needBytes)$R$D  in $($need.Count) of $($Files.Count) files  $dot  $(KB $allBytes) in total$R$srcNote",
+        "$($MU)Estimate   $R$B~$(Secs $totalEst)$R$D  for all $($Steps.Count) steps$(if (-not $local -and $need.Count) { ', depends on the connection' })$R")
     Draw -Force
 
     # ---------------------------------------------------------------- 3. files

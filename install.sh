@@ -13,11 +13,11 @@
 # non-ASCII character: in a UTF-8 locale bash 3.2 reads "$MU·" as a variable named "MU·" (seen 2026-10-20).
 set -euo pipefail
 
-VERSION="1.7.0"
+VERSION="1.7.1"
 BASE="https://print.mahanmirzaee.com/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
 PACK=""          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
 PORT=8631
-FILES=("unix/schoolprinter.pl:981205CAA7CAFA7D05805CFF6BB9017E64B9E20D52935D1DDA9AA0056457F619:123962" "web/admin.html:F4ECC01B695A7BB7123397C882A94442154D76AE45A3EE6664999B56065D45A0:9143" "web/admin.js:FEC51E1747803A5A061E42D62848DFF524ADEC8D7E1B396867763E145BC99C22:13210" "web/app.css:48DCBC344EFEA83DE87863800C3926AA8AE79C1093AC21D5FA14F141CC81E31A:22947" "web/i18n.js:67ABEA60BCA5DA75DABF026EF3FF1F8419EA2A3AA4A3CD8A198CA526F21C3EA4:37753" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:91604A03DFE17F94151E0A155F06404B7004BA8A66DFAF6C13B1ABA4CE2C56E5:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:925842B5B9D8096FA13B838E06EA9CB78B18B61AFED9571BD433B5A8CF5BE992:123962" "web/admin.html:A7FB555A5678C656B26257C109D8EDCE2CC870D08771A7B0EB1524623310BEA2:9143" "web/admin.js:FEC51E1747803A5A061E42D62848DFF524ADEC8D7E1B396867763E145BC99C22:13210" "web/app.css:48DCBC344EFEA83DE87863800C3926AA8AE79C1093AC21D5FA14F141CC81E31A:22947" "web/i18n.js:67ABEA60BCA5DA75DABF026EF3FF1F8419EA2A3AA4A3CD8A198CA526F21C3EA4:37753" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:999A32400F8713BA011B0DE3423370F6C0B7349EF1EB67E78B76E1AE9362C070:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
@@ -38,7 +38,7 @@ grad() { local t="$1" i out=""; for (( i = 0; i < ${#t}; i++ )); do out+="${E}[3
 S_ID=(); S_TITLE=(); S_EST=(); S_STATE=(); S_DETAIL=(); S_T0=(); S_EL=(); S_FRAC=()
 add_step() { S_ID+=("$1"); S_TITLE+=("$2"); S_EST+=("$3"); S_STATE+=(pending); S_DETAIL+=(""); S_T0+=(0); S_EL+=(0); S_FRAC+=(0); }
 add_step check   "Check this computer"        500
-add_step net     "Measure network speed"      1000
+[ -n "$PACK" ] && add_step net "Download the package"   3000    # Runflare: every file in one download
 add_step files   "Download & verify files"    5000
 add_step printer "Choose the printer"         1000
 add_step service "Start the print service"    2500
@@ -46,7 +46,7 @@ add_step network "Open the local network"     1000
 add_step extras  "Shortcut & Office files"    800
 add_step verify  "Check it answers"           2000
 ix() { local i; for (( i = 0; i < ${#S_ID[@]}; i++ )); do [ "${S_ID[$i]}" = "$1" ] && { echo $i; return; }; done; }
-PLAN=("${MU}Network    ${R}${D}measuring...${R}" "${MU}Download   ${R}${D}-${R}" "${MU}Estimate   ${R}${D}-${R}")
+PLAN=("${MU}Download   ${R}${D}-${R}" "${MU}Estimate   ${R}${D}-${R}")
 T0=$(now_ms); DRAWN=0; LAST=0; FRAME=0
 
 draw() {
@@ -143,35 +143,26 @@ for entry in "${FILES[@]}"; do
 done
 finish check "$(awk -v m="$free_mb" 'BEGIN{printf "%.1f GB free", m/1024}')  ·  $(perl -e 'printf "Perl %vd", $^V')  ·  CUPS ready"
 
-# ---------------------------------------------------------------- 2. network speed + plan
+# ---------------------------------------------------------------- 2. Runflare package (other sources: no speed test - the download shows its own speed)
 LOCAL=""; [ -n "$HERE" ] && [ -d "$HERE/web" ] && LOCAL=1
-NET_KBPS_T=0; LAT=0
+NET=""
 if [ -n "$PACK" ] && [ -z "$LOCAL" ] && [ ${#NEED[@]} -gt 0 ]; then    # Runflare: the whole package in one download
     begin net "downloading every file in one package (Runflare mirror)"
     t0=$(now_ms); mkdir -p "$tmpd/pack"
     curl -fsSL --retry 2 -o "$tmpd/pack.tgz" "$PACK" && tar -xzf "$tmpd/pack.tgz" -C "$tmpd/pack" 2>/dev/null \
         || fail net "Could not download from the Runflare mirror." "Try the other Iran mirror (jsDelivr) on print.mahanmirzaee.com, or Plan B: download SchoolPrinter-mac-linux.zip on any device, copy it here, unzip, and run: sudo bash install.sh"
     PB=$(wc -c < "$tmpd/pack.tgz"); XFER=$(( $(now_ms) - t0 )); (( XFER < 1 )) && XFER=1
-    HERE="$tmpd/pack/package/app"; LOCAL=1; NET_KBPS_T=$(( PB * 10000 / 1024 / XFER ))
+    HERE="$tmpd/pack/package/app"; LOCAL=1; NET=1
     finish net "$(kbps "$PB" "$XFER")  ·  $(kb "$PB") in one package  ·  every file is checked next"
-else begin net "downloading a 128 KB test file"; fi
-if [ -n "$PACK" ] && (( NET_KBPS_T > 0 )); then :
-elif [ -n "$LOCAL" ]; then finish net "offline install - using the files next to this script"
-elif [ ${#NEED[@]} -eq 0 ]; then finish net "skipped - all files already up to date"
-else
-    m="$(curl -fsS -o /dev/null -w '%{size_download} %{time_starttransfer} %{time_total}' "$BASE/probe.bin?t=$RANDOM$RANDOM" 2>/dev/null)" \
-        || fail net "Could not reach the download server (direct from print.mahanmirzaee.com)." "Plan B: download SchoolPrinter-mac-linux.zip from print.mahanmirzaee.com on any device, copy it here, unzip, and run: sudo bash install.sh"
-    read -r PB PST PTT <<< "$m"
-    LAT=$(awk -v s="$PST" 'BEGIN{printf "%d", s*1000}'); XFER=$(awk -v a="$PST" -v b="$PTT" 'BEGIN{x=(b-a)*1000; if (x<1) x=1; printf "%d", x}')
-    NET_KBPS_T=$(( PB * 10000 / 1024 / XFER ))     # tenths of KB/s
-    finish net "$(kbps "$PB" "$XFER")  ·  ${LAT} ms latency  ·  measured with $(kb "$PB")"
+elif [ -n "$(ix net)" ]; then
+    begin net; if [ ${#NEED[@]} -gt 0 ]; then finish net "offline install - using the files next to this script"; else finish net "skipped - all files already up to date"; fi
 fi
-fi_=$(ix files)
-if (( NET_KBPS_T > 0 )); then S_EST[$fi_]=$(( NEED_BYTES * 10000 / 1024 / NET_KBPS_T + ${#NEED[@]} * LAT + 300 ))
-elif [ ${#NEED[@]} -gt 0 ]; then S_EST[$fi_]=500; else S_EST[$fi_]=200; fi
+fi_=$(ix files)    # no speed test: until the download starts, assume ~400 KB/s; then the progress bar follows the real download
+if [ -n "$LOCAL" ] || [ ${#NEED[@]} -eq 0 ]; then S_EST[$fi_]=500; else S_EST[$fi_]=$(( NEED_BYTES * 1000 / 1024 / 400 + ${#NEED[@]} * 50 )); fi
 TOTAL_EST=0; for e in "${S_EST[@]}"; do TOTAL_EST=$((TOTAL_EST + e)); done
-if (( NET_KBPS_T > 0 )); then netline="${B}$((NET_KBPS_T / 10)).$((NET_KBPS_T % 10)) KB/s${R}  ${D}·  ${LAT} ms latency${R}"; elif [ -n "$LOCAL" ]; then netline="${D}offline (zip)${R}"; else netline="${D}not needed${R}"; fi
-PLAN=("${MU}Network    ${R}$netline" "${MU}Download   ${R}${B}$(kb $NEED_BYTES)${R}${D}  in ${#NEED[@]} of ${#FILES[@]} files  ·  $(kb $ALL_BYTES) in total${R}" "${MU}Estimate   ${R}${B}~$(secs $TOTAL_EST)${R}${D}  for all ${#S_ID[@]} steps${R}")
+if [ -n "$NET" ]; then srcnote="${D}  from Runflare in one package${R}"; elif [ -n "$LOCAL" ]; then srcnote="${D}  offline (zip)${R}"; else srcnote=""; fi
+estnote=""; [ -z "$LOCAL" ] && [ ${#NEED[@]} -gt 0 ] && estnote=", depends on the connection"
+PLAN=("${MU}Download   ${R}${B}$(kb $NEED_BYTES)${R}${D}  in ${#NEED[@]} of ${#FILES[@]} files  ·  $(kb $ALL_BYTES) in total${R}$srcnote" "${MU}Estimate   ${R}${B}~$(secs $TOTAL_EST)${R}${D}  for all ${#S_ID[@]} steps$estnote${R}")
 draw force
 
 # ---------------------------------------------------------------- 3. files
