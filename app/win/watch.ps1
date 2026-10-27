@@ -176,7 +176,7 @@ while ($true) {
         $file = if ($s) { Join-Path $inbox $s.file } else { $null }
         if (-not $s -or -not (Test-Path $file) -or $tried.ContainsKey($file)) { Remove-Item $j.FullName -Force -EA SilentlyContinue; continue }
         $code = Print-Job $file $s $printer
-        Add-Content $log "$(Get-Date -Format s)  $($s.file)  copies=$($s.copies)  exit=$code"
+        Add-Content -Encoding UTF8 $log "$(Get-Date -Format s)  $($s.file)  copies=$($s.copies)  exit=$code"
         if ($s.jid) { if ($code -eq 0) { Sp-JobSet ([string]$s.jid) @{ state = 'printing' } } else { Sp-JobSet ([string]$s.jid) @{ state = 'failed'; err = [string]$code } } }
         Done-With @($file, $j.FullName)
     }
@@ -186,9 +186,9 @@ while ($true) {
         if ($f.BaseName -match '-c(\d+)$') { $s.copies = [Math]::Min([Math]::Max([int]$Matches[1], 1), 20) }
         $s = [pscustomobject]$s
         $code = Print-Job $f.FullName $s $printer
-        Add-Content $log "$(Get-Date -Format s)  $($f.Name)  copies=$($s.copies)  exit=$code"
+        Add-Content -Encoding UTF8 $log "$(Get-Date -Format s)  $($f.Name)  copies=$($s.copies)  exit=$code"
         Done-With @($f.FullName)
     }
-    if ((Test-Path $log) -and (Get-Item $log).Length -gt 1MB) { Get-Content $log -Tail 500 | Set-Content "$log.tmp"; Move-Item "$log.tmp" $log -Force }
+    if ((Test-Path $log) -and (Get-Item $log).Length -gt 1MB) { Get-Content $log -Tail 500 -Encoding UTF8 | Set-Content "$log.tmp" -Encoding UTF8; Move-Item "$log.tmp" $log -Force }
     Start-Sleep -Seconds 2
 }

@@ -333,9 +333,17 @@ function Sp-Unenvelope([byte[]]$p) {
     $rest = New-Object byte[] ($p.Length - 4 - $n); [Buffer]::BlockCopy($p, 4 + $n, $rest, 0, $rest.Length)
     @{ meta = $meta; payload = $rest }
 }
+# the other computer's clock may be off (school PCs often are): requests use its time, learned from its last "wrong time" answer
+function Sp-ClockOff([string]$id) { $f = Join-Path $SpSync "clock\$id"; if (Test-Path $f) { $v = ([IO.File]::ReadAllText($f)).Trim(); if ($v -match '^-?\d+$') { return [int64]$v } }; 0 }
+function Sp-ClockLearn([string]$id, [string]$body) {    # a 401 answer says the other side's time: remember how far it is from ours
+    if ($id -cnotmatch '^[0-9a-f]{32}$') { return }
+    $j = $null; try { $j = $body | ConvertFrom-Json } catch {}; if (-not $j -or [string]$j.time -notmatch '^\d{9,11}$') { return }
+    $d = [int64]$j.time - (Sp-Now)
+    if ([math]::Abs($d - (Sp-ClockOff $id)) -gt 60) { $dir = Join-Path $SpSync 'clock'; New-Item -ItemType Directory $dir -Force | Out-Null; [IO.File]::WriteAllText((Join-Path $dir $id), "$d") }
+}
 function Sp-Seal($x, [string]$path, $meta, [byte[]]$payload) {    # -> @{ ct; hdr; n; k } for a request to station $x (always POST)
     $g = Sp-Group; if (-not $g -or [string]$x.pk -cnotmatch '^[0-9a-f]{512}$') { return $null }
-    $k = Sp-PairKeys $g ([string]$x.id) ([string]$x.pk); $i = Sp-Identity; $id = Sp-NodeId; $t = Sp-Now; $n = Sp-Rand 16
+    $k = Sp-PairKeys $g ([string]$x.id) ([string]$x.pk); $i = Sp-Identity; $id = Sp-NodeId; $t = (Sp-Now) + (Sp-ClockOff ([string]$x.id)); $n = Sp-Rand 16
     $ct = [SpCrypto]::Ctr($k.e, (Sp-Iv $k.mk 'req' $n), (Sp-Envelope $meta $payload))
     @{ ct = $ct; n = $n; k = $k; hdr = [ordered]@{ 'X-Sync-Port' = "$SpPort"; 'X-Sync-Node' = $id; 'X-Sync-Time' = "$t"; 'X-Sync-Nonce' = $n; 'X-Sync-Pk' = [string]$i.pk; 'X-Sync-Pkmac' = (Sp-PkMac $g $id ([string]$i.pk))
         'X-Sync-Sig' = (Sp-Hex (Sp-HmacRaw $k.mk $SpUtf8.GetBytes("req`n$t`nPOST`n$path`n$id`n$n`n" + (Sp-Hex (Sp-Sha256 $ct))))) } }
@@ -347,6 +355,7 @@ function Sp-Unseal($sl, [int]$code, [byte[]]$body, [string]$mac) {    # answer -
 function Sp-Peer($x, [string]$path, $meta, [byte[]]$payload, [int]$timeoutMs = 5000) {    # encrypted request to station $x -> @{ code; bytes }
     $sl = $null; try { $sl = Sp-Seal $x $path $meta $payload } catch {}; if (-not $sl) { return @{ code = 0; bytes = $null } }
     $r = Sp-Http ([string]$x.url) 'POST' $path $sl.hdr $sl.ct $timeoutMs
+    if ($r.code -eq 401 -and $r.bytes) { Sp-ClockLearn ([string]$x.id) ($SpUtf8.GetString($r.bytes)) }
     if ($r.code -eq 0 -or $r.code -eq 401) { return @{ code = $r.code; bytes = $null } }
     $b = if ($r.bytes) { $r.bytes } else { New-Object byte[] 0 }
     $pl = Sp-Unseal $sl $r.code $b $r.mac; if ($null -eq $pl) { return @{ code = 0; bytes = $null } }

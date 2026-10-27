@@ -238,7 +238,7 @@ sub do_print {    # in the request's worker, after the reply: settings -> lp opt
 # the password itself is never stored. Same protocol as sync.ps1/syncd.ps1 on Windows, so both mix in one network.
 my $SYNC = "$DIR/Sync"; my $STD = "$SYNC/st"; my $JOBS = "$SYNC/jobs"; my $SCANS = "$SYNC/scans"; my $HELD = "$SYNC/held"; my $ALIAS = 'schoolprinter.local';
 my $HAS_SHA = eval { require Digest::SHA; 1 } ? 1 : 0;
-my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.5'; my $FRESH = 25;
+my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.6'; my $FRESH = 25;
 
 sub rnd_bytes { my $n = shift; my $b = ''; if (open(my $h, '<:raw', '/dev/urandom')) { read($h, $b, $n); close $h } $b .= chr(int rand 256) while length $b < $n; $b }
 sub rnd_hex { unpack('H*', rnd_bytes(shift)) }
@@ -1208,6 +1208,7 @@ sub reply {
     print $c "HTTP/1.1 $code $REASON{$code}\r\nContent-Type: $type\r\nContent-Length: " . length($body) .
         "\r\nCache-Control: " . ($cache ? 'max-age=86400' : 'no-store') . "\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n$body";
 }
+sub now_t { time + ($ENV{SP_SKEW} || 0) }    # this computer's clock (SP_SKEW: test copies only, a clock that is off)
 sub jreply { my ($c, $code, $obj) = @_; reply($c, $code, 'application/json; charset=utf-8', json($obj)) }
 # ---------------------------------------------------------------- encryption between stations (protocol 2)
 # Every station has a permanent identity: a Diffie-Hellman key pair (RFC 3526 group 14, 2048 bit). Two stations derive
@@ -1260,11 +1261,17 @@ sub peer {    # encrypted, signed request to station $x -> (status, decrypted an
     my ($x, undef, $p, $meta, $payload, $to) = @_; my $m = 'POST'; my $g = group() or return (0, 'no network');    # always POST (Windows sends these in parallel)
     return (0, 'unknown station') unless ($x->{pk} || '') =~ /^[0-9a-f]{512}$/;
     my ($e, $mk) = eval { pair_keys($g, $x->{id}, $x->{pk}) } or return (0, 'keys');
-    my ($xs, $mypk) = identity(); my $id = node_id(); my $t = time; my $n = rnd_hex(16);
+    # the other computer's clock may be off (school PCs often are): use its time, learned from its last "wrong time" answer
+    my $off = slurp("$SYNC/clock/$x->{id}") =~ /^(-?\d+)$/ ? $1 : 0;
+    my ($xs, $mypk) = identity(); my $id = node_id(); my $t = now_t() + $off; my $n = rnd_hex(16);
     my $ct = eval { ctr($e, ivof($mk, 'req', $n), envelope($meta, $payload)) }; return (0, 'crypto') unless defined $ct;
     my %h = ('X-Sync-Port' => $PORT, 'X-Sync-Node' => $id, 'X-Sync-Time' => $t, 'X-Sync-Nonce' => $n, 'X-Sync-Pk' => $mypk, 'X-Sync-Pkmac' => pk_mac($g, $id, $mypk),
              'X-Sync-Sig' => Digest::SHA::hmac_sha256_hex("req\n$t\n$m\n$p\n$id\n$n\n" . Digest::SHA::sha256_hex($ct), $mk));
     my ($c, $b, $hd) = http($x->{url}, $m, $p, \%h, $ct, $to);
+    if ($c == 401) {    # refused: if it says its time and that is far from ours, remember the difference for the next request
+        my $r = jdec($b); my $st = ref $r eq 'HASH' ? $r->{time} : undef;
+        if (defined $st && $st =~ /^\d{9,11}$/ && abs(($st - now_t()) - $off) > 60) { mkdir "$SYNC/clock"; spit("$SYNC/clock/$x->{id}", $st - now_t()) }
+    }
     return ($c, $b) if $c == 0 || $c == 401;    # not sealed: no trust in the body
     my $mac = ($hd =~ /^X-Sync-Mac:\s*([0-9a-f]{64})/mi)[0] || '';
     return (0, 'bad seal') unless same_text(Digest::SHA::hmac_sha256_hex("res\n$n\n$c\n" . Digest::SHA::sha256_hex($b), $mk), $mac);
@@ -1273,7 +1280,7 @@ sub peer {    # encrypted, signed request to station $x -> (status, decrypted an
 sub sync_open {    # (server) check and open a station's request -> context {from, e, mk, n, meta, payload} or undef
     my ($H, $m, $p, $body) = @_; my $g = group() or return undef;
     my ($id, $t, $n, $s, $pk, $pm) = map { $H->{$_} || '' } qw(x-sync-node x-sync-time x-sync-nonce x-sync-sig x-sync-pk x-sync-pkmac);
-    return undef unless $id =~ /^[0-9a-f]{32}$/ && $t =~ /^\d{9,11}$/ && $n =~ /^[0-9a-f]{32}$/ && $s =~ /^[0-9a-f]{64}$/ && abs(time - $t) <= 300;
+    return undef unless $id =~ /^[0-9a-f]{32}$/ && $t =~ /^\d{9,11}$/ && $n =~ /^[0-9a-f]{32}$/ && $s =~ /^[0-9a-f]{64}$/ && abs(now_t() - $t) <= 300;
     return undef unless pin_ok($g, $id, $pk, $pm);
     my ($e, $mk) = eval { pair_keys($g, $id, $pk) } or return undef;
     return undef unless same_text(Digest::SHA::hmac_sha256_hex("req\n$t\n$m\n$p\n$id\n$n\n" . Digest::SHA::sha256_hex($body), $mk), $s);
@@ -1342,7 +1349,7 @@ sub handle {
     if ($path =~ m{^/sync/}) {    # another station: encrypted and sealed both ways
         return jreply($c, 413, { error => 'File is bigger than 50 MB.' }) if $len > $MAX + 65536;
         my $body = read_body($c, $len, $rest); return unless defined $body;
-        my $x = sync_open(\%H, $m, $path, $body) or return jreply($c, 401, { error => 'SIGNATURE', time => N(time) });
+        my $x = sync_open(\%H, $m, $path, $body) or return jreply($c, 401, { error => 'SIGNATURE', time => N(now_t()) });
         my ($from, $mt, $pl) = ($x->{from}, $x->{meta}, $x->{payload});
         # a station that knows us but we do not know it: learn it from this very contact (its address is right here),
         # and look again now - so if either side finds the other, both know each other

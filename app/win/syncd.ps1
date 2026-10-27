@@ -104,7 +104,7 @@ function Self-Status {
     $os = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
     $office = Sp-LocalOffice; $busy = @(Get-ChildItem $SpUp -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.todo', '.doing' }).Count
     $open = $c.open -ne '0'; $u = Sp-Read (Join-Path $SpSync 'uptime.json')
-    [ordered]@{ app = 'school-printer'; proto = 2; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.7.5'
+    [ordered]@{ app = 'school-printer'; proto = 2; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.7.6'
         open = $open; ready = ($open -and $pst -eq 'Normal'); accept = ($c.accept -ne '0'); printer = $pr; pstatus = $pst
         jobs = ($spool.Count + $inb.Count); queue = $sheets; color = [bool]$caps.color; duplex = [bool]$caps.duplex; papers = @($caps.papers)
         conv = [ordered]@{ ok = ($office -in 'office', 'lo'); kind = $office; busy = $busy; share = ($c.conv -ne '0') }
@@ -127,11 +127,11 @@ function Find-Stations {    # -> Sync\peers.json (same password), Sync\others.js
     $me = Sp-NodeId; $old = @{}; foreach ($x in Sp-Peers) { $old[[string]$x.id] = $x }
     $found = @{}; $gone = @{}; $others = 0
     $targets = Sp-ScanTargets; $hosts = Sp-ScanOpen $targets; $answered = 0
-    $calls = @(foreach ($h in $hosts) { $wc = New-Object Net.WebClient; @{ t = $h; wc = $wc; k = $wc.DownloadStringTaskAsync("http://$($h[0]):$($h[1])/sync/hello") } })
+    $calls = @(foreach ($h in $hosts) { $wc = New-Object Net.WebClient; @{ t = $h; wc = $wc; k = $wc.DownloadDataTaskAsync("http://$($h[0]):$($h[1])/sync/hello") } })    # bytes, decoded as UTF-8 below: DownloadString can use the Windows code page (Persian names came out garbled)
     if ($calls.Count) { try { [void][Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($calls | ForEach-Object { $_.k }), 3000) } catch {} }
     foreach ($cl in $calls) {
         if ($cl.k.Status -ne 'RanToCompletion') { try { $cl.wc.CancelAsync() } catch {}; continue }
-        $h = $null; try { $h = $cl.k.Result | ConvertFrom-Json } catch {}
+        $h = $null; try { $h = $SpUtf8.GetString([byte[]]$cl.k.Result) | ConvertFrom-Json } catch {}
         if (-not $h -or $h.app -ne 'school-printer' -or [string]$h.id -cnotmatch '^[0-9a-f]{32}$' -or $h.id -eq $me) { continue }
         $answered++
         if ([string]$h.gid -eq $g.gid) {
@@ -183,7 +183,10 @@ function Poll-Stations {    # every station's /sync/status at once -> Sync\st\<i
             $err = 'BAD_REPLY'
         } elseif ($cl.k.Status -eq 'Faulted') {
             $ex = $cl.k.Exception; while ($ex -and -not ($ex -is [Net.WebException])) { $ex = $ex.InnerException }
-            if ($ex -and $ex.Response -and [int]$ex.Response.StatusCode -eq 401) { $err = 'PASSWORD' }
+            if ($ex -and $ex.Response -and [int]$ex.Response.StatusCode -eq 401) {
+                $err = 'PASSWORD'
+                try { $rd = New-Object IO.StreamReader($ex.Response.GetResponseStream(), $SpUtf8); Sp-ClockLearn $id ($rd.ReadToEnd()); $rd.Close() } catch {}    # its clock is off: use its time next round
+            }
         } else { try { $cl.wc.CancelAsync() } catch {} }
         Sp-Write (Join-Path $SpSt "$id.err") ([ordered]@{ at = (Sp-Now); err = $err })
     }
