@@ -206,17 +206,22 @@ table.stations{min-width:760px}table.stations td{vertical-align:top}table.statio
 .tokv{font:700 clamp(24px,7vw,34px)/1.1 ui-monospace,"Cascadia Mono",Consolas,monospace;letter-spacing:.06em;text-align:center;padding:12px;border-radius:14px;
   background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;box-shadow:0 14px 30px -14px var(--acc);user-select:all}
 .alerts{display:grid;gap:8px;background:color-mix(in srgb,var(--err) 10%,transparent);border-color:color-mix(in srgb,var(--err) 35%,transparent)}.alerts .alert{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-/* admin page: two columns on a desktop (network on the left, the everyday controls beside it), one column on a phone */
-.adm{max-width:1280px}.admgrid{display:grid;gap:16px;align-items:start}.admmain,.admside{min-width:0}
-.admside>.grid:first-of-type{margin-top:16px}.domain .tr b{font-size:14px}
-@media(min-width:1100px){
-  .admgrid{grid-template-columns:minmax(0,1fr) 380px}
-  .admmain>.netcard{margin-bottom:0}
-  .admside{display:grid;gap:16px}.admside>.grid{margin-top:0!important;grid-template-columns:minmax(0,1fr);gap:16px}
-  .admside .hero{padding:22px;flex-direction:column;align-items:stretch}.admside .hero .url{font-size:17px;line-height:1.35;word-break:normal;overflow-wrap:anywhere}
-  .netopts{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .netopts .opt{position:relative;flex-direction:column;align-items:flex-start;gap:10px;padding:16px}
-  .netopts .opt .ock{position:absolute;top:14px;inset-inline-end:14px}
-  #netmode:not([hidden]){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
-  #netmode>.opts{grid-column:1/-1}#netmode:has(#tokbox[hidden]) .joinbox{grid-column:1/-1}
+/* admin page: a dashboard on a computer screen (the admin page only opens on the station itself, so that is where it is used):
+   a strip of everyday controls; the stations, recent prints and settings tiles (left) beside the network (right); one column on a phone */
+.adm{max-width:none;padding-inline:clamp(16px,2vw,40px)}.adm .card,.adm .hero{margin:0}.adm .eyebrow{display:block;margin-bottom:12px}
+.strip,.dash,.dleft,.dright,.dmore{display:grid;gap:16px;align-items:start;min-width:0}.dash{margin-top:16px}
+.dleft>*,.dright>*,.dmore>*,.strip>*{min-width:0}
+.dleft>#netok{display:grid;gap:14px}.dleft>#netok[hidden]{display:none}
+.stcard{display:grid;gap:14px}.stcard[hidden]{display:none}.toggles .tr b{font-size:14px}
+.domcard{display:grid;gap:8px}.domcard[hidden]{display:none}.domcard .tr b{font-size:14px}
+.s-addr .url{font-size:clamp(16px,1.45vw,28px);white-space:nowrap;word-break:normal;overflow:hidden;text-overflow:ellipsis}
+#netmode:not([hidden]){display:grid;gap:12px}.netcard{margin-bottom:0}
+@media(min-width:760px){.strip,.dmore{grid-template-columns:repeat(2,minmax(0,1fr))}.strip .s-addr{grid-column:1/-1}}
+@media(min-width:1000px){
+  .strip{grid-template-columns:minmax(0,1.4fr) minmax(0,.8fr) minmax(0,1.2fr)}.strip .s-addr{grid-column:auto}.strip>*{height:100%}
+  .s-addr{flex-direction:column;align-items:stretch;justify-content:space-between}.s-addr .btn{align-self:flex-start}
+  .dash{grid-template-columns:minmax(0,1fr) 420px}
+  .dash{grid-template-rows:auto 1fr}    /* the tall network column's extra height goes below the tiles, not between */
+  .dleft{grid-column:1;grid-row:1}.dmore{grid-column:1;grid-row:2;align-self:start}.dright{grid-column:2;grid-row:1 / span 2}
 }
+@media(min-width:1500px){.dash{grid-template-columns:minmax(0,1fr) 460px}.dmore{grid-template-columns:repeat(4,minmax(0,1fr))}}

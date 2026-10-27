@@ -5,6 +5,8 @@
 if [ "$(uname -s)" = Darwin ]; then
     DIR="/Library/Application Support/SchoolPrinter"; plist=/Library/LaunchDaemons/com.mahanmirzaee.schoolprinter.plist
     launchctl bootout system "$plist" 2>/dev/null || true; rm -f "$plist"
+    oplist=/Library/LaunchAgents/com.mahanmirzaee.schoolprinter.office.plist; cu="$(stat -f %Su /dev/console 2>/dev/null || true)"
+    [ -n "$cu" ] && [ "$cu" != root ] && launchctl bootout "gui/$(id -u "$cu")/com.mahanmirzaee.schoolprinter.office" 2>/dev/null; rm -f "$oplist"
     u="$(stat -f %Su /dev/console 2>/dev/null || true)"; d="$(eval echo "~$u")/Desktop"; rm -f "$d/School Printer (Admin).webloc" "$d/Start School Printer.command" "$d/Stop School Printer.command"
 else
     DIR=/opt/schoolprinter

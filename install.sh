@@ -13,11 +13,11 @@
 # non-ASCII character: in a UTF-8 locale bash 3.2 reads "$MU·" as a variable named "MU·" (seen 2026-10-20).
 set -euo pipefail
 
-VERSION="1.7.3"
+VERSION="1.7.4"
 BASE="https://print.mahanmirzaee.com/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
 PACK=""          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
 PORT=8631
-FILES=("unix/schoolprinter.pl:4F2FCC891CAA60D43F95AE2BDD3D5198882A81DE4317893F8A60700279D22483:126492" "web/admin.html:B85A90F1C798867CC06B1CF2E920986FDBA706BAD4E716AFF2F70AB4312B52A0:9253" "web/admin.js:4C5F0BF41EAF005986EAB1046A6C3F6490ED49920EB56A00A2C81BE79854C1C8:13502" "web/app.css:EEACAF635DBC0B62C125F1E683BBC61C40BAA15E4617D0F0D9883C30393CB45C:24081" "web/i18n.js:B6CB9F3E78B1E1416C8A500F5EE5FC209E1CFED15DBB529305061A7334CE59CC:38296" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:113B5EC97119FD74E1CB65B2BE8D7704D0CB482CEE0BE455A8598E2FC1D64B4F:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:0032EAE8BBDD1F3C775C4AE39BB3AF73E60BA679EF62E02D9C1AA67B9D0A2E14:129430" "unix/office-mac.sh:925C3A7BDDB69AACE64C5CC31676534B7AA1E83CFEF4C1F6A4EEFD1DDC1B9F14:4731" "web/admin.html:671E99BA73CDD19A62B7E41CB72EA0DFD2B67FF6B8AC376A638FD4B944A2A5BC:9597" "web/admin.js:F9CE28AD474DB8C3B1F94E23081F393BD06A118A41BFB4CC4342B162FDAB9FF5:13758" "web/app.css:9E53C50430CDAF0158A29F6878B05B90A713AB3EE8A73E71274FF3AFAB751D77:24778" "web/i18n.js:58A236DE9A7D71B76B1CE435B5605C602116DD6AD06773C3BB063CA38E85C886:38929" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:0721F936F030F01193C436BC1662854E51E934C6F600AFEF6BF7E006AB323B9C:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
@@ -236,6 +236,22 @@ if [ "$OS" = Darwin ]; then
 EOF
     chmod 644 "$plist"; chown root:wheel "$plist"
     launchctl bootstrap system "$plist"; launchctl enable system/com.mahanmirzaee.schoolprinter
+    # Microsoft Office: converted by a helper in each signed-in user's session (Office cannot run from the service)
+    mkdir -p "$DIR/Office"; chown nobody "$DIR/Office"; chmod 777 "$DIR/Office"; chmod 755 "$DIR/office-mac.sh"
+    oplist=/Library/LaunchAgents/com.mahanmirzaee.schoolprinter.office.plist
+    cat > "$oplist" <<OPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.mahanmirzaee.schoolprinter.office</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$DIR/office-mac.sh</string></array>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer><key>ProcessType</key><string>Background</string>
+</dict></plist>
+OPLIST
+    chmod 644 "$oplist"; chown root:wheel "$oplist"
+    cu="$(stat -f %Su /dev/console 2>/dev/null || true)"
+    if [ -n "$cu" ] && [ "$cu" != root ]; then cid="$(id -u "$cu")"; launchctl bootout "gui/$cid/com.mahanmirzaee.schoolprinter.office" 2>/dev/null || true; launchctl bootstrap "gui/$cid" "$oplist" 2>/dev/null || true; fi
     finish service "LaunchDaemon com.mahanmirzaee.schoolprinter  -  starts with the Mac, restarts itself"
 else
     cat > /etc/systemd/system/schoolprinter.service <<EOF

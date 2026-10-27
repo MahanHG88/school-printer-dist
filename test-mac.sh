@@ -70,6 +70,26 @@ if [ -n "$MYID" ]; then
     else warn "admin information" "the admin page did not answer from this computer"; fi
 fi
 
+step "1b. Word, Excel and PowerPoint files"
+OA=""; for n in Word Excel PowerPoint; do [ -d "/Applications/Microsoft $n.app" ] && OA="$OA${OA:+, }$n"; done
+LO=""; [ -x /Applications/LibreOffice.app/Contents/MacOS/soffice ] || command -v soffice >/dev/null 2>&1 && LO=1
+OS_="$(get "$HERE" /status | js '$d->{office}')"
+[ -n "$OA" ] && info "Microsoft Office on this computer: $OA"; [ -n "$LO" ] && info "LibreOffice on this computer: yes"
+case "$OS_" in
+    office) pass "Office files are converted here with Microsoft Office" "$(sed -n 's/^apps=//p' "$DIR/Office/office.alive" 2>/dev/null)";;
+    lo) if [ -n "$OA" ]; then warn "converted with LibreOffice, not Microsoft Office" "the Office helper is not running - install School Printer again (1.7.4 or newer), then sign out and in"; else pass "Office files are converted here with LibreOffice"; fi;;
+    peer) info "Office files are converted on another station of the network";;
+    none) if [ -n "$OA" ]; then fail "Microsoft Office is installed but not used" "install School Printer again (1.7.4 or newer); the Office helper starts when you sign in"; else warn "no Word / Excel / PowerPoint converter" "install Microsoft Office or LibreOffice to print those files"; fi;;
+    *) info "Office files: (service not answering)";;
+esac
+if [ "$OS_" = office ] && echo "$OA" | grep -q Word; then    # a real conversion through Word (the first time macOS asks to allow it: click OK)
+    printf '{\\rtf1\\ansi School Printer test page}' > "$WORK/t.rtf"
+    info "converting a small Word file - if macOS asks whether School Printer may control Microsoft Word, click OK"
+    TID="$(curl -s -m 20 -H 'X-Filename: test.rtf' --data-binary @"$WORK/t.rtf" "$HERE/upload" | js '$d->{id}')"; st=""
+    if [ -n "$TID" ]; then for i in $(seq 1 90); do st="$(get "$HERE" "/info/$TID" | js '$d->{state}')"; [ "$st" = converting ] || break; sleep 1; done; fi
+    rec "$( [ "$st" = ready ] && echo 1 )" "a Word file becomes a PDF with Microsoft Word" "${st:-no answer}${i:+ after ${i} s}"
+fi
+
 step "2. This computer's networks"
 NETS=""
 if [ "$(uname)" = Darwin ]; then

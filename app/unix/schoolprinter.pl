@@ -57,7 +57,18 @@ sub cmd_out {    # like cmd, but only stdout (stderr discarded) - for programs t
 sub which { my $n = shift; for (split /:/, $ENV{PATH}) { return "$_/$n" if -x "$_/$n" } undef }
 my $SOFFICE = which('soffice') || which('libreoffice') || (-x '/Applications/LibreOffice.app/Contents/MacOS/soffice' ? '/Applications/LibreOffice.app/Contents/MacOS/soffice' : undef);
 my $CUPSFILTER = which('cupsfilter');
-sub office_state { $SOFFICE ? 'lo' : conv_peers() ? 'peer' : 'none' }    # peer: converted on another station
+# Microsoft Office on a Mac: Word / Excel / PowerPoint cannot be driven from this service (it runs as "nobody", outside any
+# signed-in session), so office-mac.sh runs in the signed-in user's session (LaunchAgent) and converts for us through the
+# exchange folder Office/ (open to both): it says it is alive in Office/office.alive ("apps=Word,Excel,PowerPoint").
+my $OFFX = "$DIR/Office";
+my %OAPP = (doc => 'Word', docx => 'Word', rtf => 'Word', odt => 'Word', txt => 'Word', xls => 'Excel', xlsx => 'Excel', csv => 'Excel', ods => 'Excel',
+            ppt => 'PowerPoint', pptx => 'PowerPoint', odp => 'PowerPoint');
+sub mac_office {    # -> apps the helper can use right now (empty: no helper, or no Microsoft Office)
+    my $f = "$OFFX/office.alive"; return () unless -e $f && time - (stat $f)[9] <= 15;
+    my ($a) = slurp($f) =~ /^apps=(.*)$/m; grep { /^(Word|Excel|PowerPoint)$/ } split /,/, ($a || '');
+}
+sub can_convert { $SOFFICE || mac_office() }
+sub office_state { mac_office() ? 'office' : $SOFFICE ? 'lo' : conv_peers() ? 'peer' : 'none' }    # peer: converted on another station
 sub types { my $o = office_state(); my @t = @BASE; push @t, 'txt' if $CUPSFILTER || $o ne 'none'; push @t, @OFFICE if $o ne 'none'; @t }
 
 # A "School Printer" queue (added with "Add to this device", on this computer or for another station) prints back into
@@ -173,6 +184,19 @@ sub convert {    # in a forked worker: <id>.<ext> -> <id>.pdf (or <id>.fail)
         my ($st, $o) = cmd_out($CUPSFILTER, '-m', 'application/pdf', '-i', 'text/plain', $in);
         if ($st == 0 && substr($o, 0, 4) eq '%PDF') { spit("$UP/$id.pdf", $o); $ok = 1 }
     }
+    my %have = map { $_ => 1 } mac_office();
+    if (!$ok && $OAPP{$ext} && $have{$OAPP{$ext}}) {    # Microsoft Office (Mac), through the helper in the user's session
+        my $x = "$OFFX/$id"; spit("$x.$ext", slurp($in)); chmod 0644, "$x.$ext"; spit("$x.todo.part", $ext); rename "$x.todo.part", "$x.todo";
+        my $end = time + 150;
+        while (time < $end) {
+            if (-e "$x.pdf") { Time::HiRes::sleep(0.2); my $d = slurp("$x.pdf"); if (substr($d, 0, 4) eq '%PDF') { spit("$UP/$id.pdf", $d); $ok = 1 } last }
+            last if -e "$x.fail";
+            last if !-e "$x.doing" && !-e "$x.todo";    # claimed and gone without an answer
+            last if !mac_office() && -e "$x.todo";      # the helper went away (user signed out) before taking it
+            Time::HiRes::sleep(0.3);
+        }
+        unlink map { "$x$_" } (".$ext", '.todo', '.pdf', '.fail');
+    }
     if (!$ok && $SOFFICE) {
         mkdir "$UP/lo-$id";
         cmd($SOFFICE, "-env:UserInstallation=file://$DIR/lo-profile", '--headless', '--norestore', '--convert-to', 'pdf', '--outdir', "$UP/lo-$id", $in);
@@ -214,7 +238,7 @@ sub do_print {    # in the request's worker, after the reply: settings -> lp opt
 # the password itself is never stored. Same protocol as sync.ps1/syncd.ps1 on Windows, so both mix in one network.
 my $SYNC = "$DIR/Sync"; my $STD = "$SYNC/st"; my $JOBS = "$SYNC/jobs"; my $SCANS = "$SYNC/scans"; my $HELD = "$SYNC/held"; my $ALIAS = 'schoolprinter.local';
 my $HAS_SHA = eval { require Digest::SHA; 1 } ? 1 : 0;
-my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.3'; my $FRESH = 25;
+my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.4'; my $FRESH = 25;
 
 sub rnd_bytes { my $n = shift; my $b = ''; if (open(my $h, '<:raw', '/dev/urandom')) { read($h, $b, $n); close $h } $b .= chr(int rand 256) while length $b < $n; $b }
 sub rnd_hex { unpack('H*', rnd_bytes(shift)) }
@@ -385,7 +409,7 @@ sub self_status {
     return { app => 'school-printer', proto => N($PROTO), id => node_id(), name => $HOSTNAME, station => station_of(%cf), version => $VERSION,
         open => B($open), ready => B($open && $ps eq 'Normal'), accept => B($cf{accept} ne '0'), printer => $pr, pstatus => $ps,
         jobs => N($jobs), queue => N($sheets), color => $cp->{color}, duplex => $cp->{duplex}, papers => $cp->{papers},
-        conv => { ok => B($SOFFICE ? 1 : 0), kind => ($SOFFICE ? 'lo' : 'none'), busy => N(conv_busy()), share => B($cf{conv} ne '0') },
+        conv => { ok => B(can_convert() ? 1 : 0), kind => (mac_office() ? 'office' : $SOFFICE ? 'lo' : 'none'), busy => N(conv_busy()), share => B($cf{conv} ne '0') },
         cores => N($cores), cpu => N($cpu), memFree => N($free), memTotal => N($total), url => my_url(), at => N(time),
         bw => N(bw_now()), up => N(uptime_blocks()), domain => $cf{domain}, domainAt => N($cf{domainAt} || 0), hasPrinter => B(length $pr && $ps ne 'Not found'), scanners => scanner_list(), lead => leader()->{id} };
 }
@@ -439,12 +463,29 @@ sub scan_open {    # connect to many addresses at once (200 at a time) -> the on
     }
     @open;
 }
+sub hello_many {    # GET /sync/hello from many addresses at once (64 at a time, 3 s at most) -> ([address, answer], ...)
+    # one at a time took minutes when a VPN on this computer accepts every connection and then never answers
+    my @t = @_; my @r; my $dir = "$SYNC/hello.$$"; mkdir $dir;
+    while (my @b = splice(@t, 0, 64)) {
+        my (%kids, %file); my $i = 0;
+        for my $x (@b) {
+            $i++; my $pid = fork; next unless defined $pid;
+            if (!$pid) { my ($c, $body) = http("http://$x->[0]:$x->[1]", 'GET', '/sync/hello', {}, '', 2); spit("$dir/$i", $body) if $c == 200; POSIX::_exit(0) }
+            $kids{$pid} = 1; $file{$i} = $x;
+        }
+        my $end = Time::HiRes::time() + 3;
+        while (%kids && Time::HiRes::time() < $end) { for (keys %kids) { delete $kids{$_} if waitpid($_, WNOHANG) } Time::HiRes::sleep(0.05) if %kids }
+        for (keys %kids) { kill 'KILL', $_; waitpid($_, 0) }
+        for my $n (sort { $a <=> $b } keys %file) { my $f = "$dir/$n"; next unless -e $f; push @r, [$file{$n}, slurp($f)]; unlink $f }
+    }
+    rmdir $dir; @r;
+}
 sub scan {    # (in its own process) -> peers.json: stations of this network; others.json: School Printers in another one
     my $g = group() or return; my $me = node_id(); my %old = map { $_->{id} => $_ } @{ peers_list() };
     my (%found, %gone, $others);
     my @tg = scan_targets(); my @op = scan_open(@tg); my $ans = 0;
-    for my $x (@op) {
-        my ($c, $b) = http("http://$x->[0]:$x->[1]", 'GET', '/sync/hello', {}, '', 2); next unless $c == 200; $ans++;
+    for my $hb (hello_many(@op)) {
+        my ($x, $b) = @$hb; $ans++;
         my $h = jdec($b); next unless ref $h eq 'HASH' && ($h->{app} || '') eq 'school-printer' && ($h->{id} || '') =~ /^[0-9a-f]{32}$/ && $h->{id} ne $me;
         if (($h->{gid} || '') eq $g->{gid}) { next unless pin_ok($g, $h->{id}, $h->{pk}, $h->{pkmac});    # not who it claims to be: ignore
             $found{$h->{id}} = { id => $h->{id}, url => "http://$x->[0]:$x->[1]", pk => $h->{pk}, station => clean_text($h->{station}, 40), seen => time } }
@@ -598,7 +639,7 @@ sub conv_peers { my %cf = get_cfg(); return () if $cf{conv} eq '0' || !group(); 
 sub pick_converter {    # -> station to convert on, or undef = here
     my @p = conv_peers() or return undef;
     my $best = $p[0]; for (@p) { $best = $_ if cscore($_->{s}) > cscore($best->{s}) }
-    return $best unless $SOFFICE;
+    return $best unless can_convert();
     my $mine = cscore(self_cached()); my $margin = abs($mine) * 0.3; $margin = 0.75 if $margin < 0.75;
     cscore($best->{s}) > $mine + $margin ? $best : undef;
 }
@@ -1325,7 +1366,7 @@ sub handle {
         }
         if ($path eq '/sync/convert') {
             my %cf = get_cfg(); my $ext = lc($mt->{ext} || '');
-            return sjreply($c, $x, 503, { error => 'NO_CONVERTER' }) unless $SOFFICE && $cf{conv} ne '0';
+            return sjreply($c, $x, 503, { error => 'NO_CONVERTER' }) unless can_convert() && $cf{conv} ne '0';
             return sjreply($c, $x, 415, { error => "This type of file can't be printed." }) unless grep { $_ eq $ext } @OFFICE, 'txt';
             my $rid = rnd_hex(16); spit("$UP/$rid.$ext", $pl);
             unless (magic_ok("$UP/$rid.$ext", $ext)) { unlink "$UP/$rid.$ext"; return sjreply($c, $x, 415, { error => "This type of file can't be printed." }) }

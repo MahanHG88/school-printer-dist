@@ -47,7 +47,7 @@
   }
   function paintNet(n) {
     if (!n) return;
-    $('netnosha').hidden = n.ok; $('netmode').hidden = !n.ok; $('netok').hidden = !n.ok; $('nocrypto').hidden = n.crypto !== false;
+    $('netnosha').hidden = n.ok; [].forEach.call(document.querySelectorAll('.needok'), function (e) { e.hidden = !n.ok; }); $('nocrypto').hidden = n.crypto !== false;
     var al = n.alerts || []; $('alerts').hidden = !al.length;
     $('alerts').innerHTML = al.map(function (a) { return '<div class="alert"><span>' + esc(L('idChanged', { s: a.station })) + '</span><button class="btn" type="button" data-trust="' + esc(a.id) + '">' + esc(L('trustAgain')) + '</button></div>'; }).join('');
     [].forEach.call($('alerts').querySelectorAll('[data-trust]'), function (b) { b.onclick = function () {
@@ -69,7 +69,9 @@
       $('netsub').textContent = sub.join(' · ');
       var sr = n.search;    // what the last search saw: shows why a station finds nobody
       $('netdiag').textContent = !n.joined || !sr ? '' : +sr.targets === 0 ? L('netDiagNone')
-        : L('netDiag', { t: +sr.targets, nets: (sr.nets || []).join(', '), o: +sr.open, p: +sr.printers });
+        : L('netDiag', { t: +sr.targets, nets: (sr.nets || []).join(', '), o: +sr.open, p: +sr.printers })
+          // nearly every address "answered": something on this computer (a VPN in TUN mode) is catching the local network
+          + (+sr.targets >= 20 && +sr.open >= +sr.targets * 0.8 ? ' — ' + L('netDiagVpn') : '');
       if (!stnEdited && document.activeElement !== $('stn')) { $('stn').value = n.station; stnCheck(); }
       if (!domEdited && document.activeElement !== $('dom')) { $('dom').value = n.domain || ''; domCheck(); }
       $('tgdns').setAttribute('aria-checked', n.dns && !!n.domain); $('tgdns').disabled = !n.domain;
