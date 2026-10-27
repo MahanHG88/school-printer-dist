@@ -5,7 +5,7 @@
 #   On this computer only:    http://localhost:8631/admin
 # Prints through CUPS (lp). Word/Excel/PowerPoint are converted with LibreOffice if installed; text with cupsfilter.
 # Core Perl only - nothing to install. Runs as a launchd/systemd service (user "nobody").
-# Env for testing: SP_DIR (data dir), SP_PORT, SP_DRYRUN=1 (do not call lp).
+# Env for testing: SP_DIR (data dir), SP_PORT, SP_DRYRUN=1 (do not call lp), SP_NOMDNS=1 (no Bonjour), SP_NOPOPUP=1.
 use strict;
 use warnings;
 use IO::Socket::INET;
@@ -214,7 +214,7 @@ sub do_print {    # in the request's worker, after the reply: settings -> lp opt
 # the password itself is never stored. Same protocol as sync.ps1/syncd.ps1 on Windows, so both mix in one network.
 my $SYNC = "$DIR/Sync"; my $STD = "$SYNC/st"; my $JOBS = "$SYNC/jobs"; my $SCANS = "$SYNC/scans"; my $HELD = "$SYNC/held"; my $ALIAS = 'schoolprinter.local';
 my $HAS_SHA = eval { require Digest::SHA; 1 } ? 1 : 0;
-my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.2'; my $FRESH = 25;
+my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.3'; my $FRESH = 25;
 
 sub rnd_bytes { my $n = shift; my $b = ''; if (open(my $h, '<:raw', '/dev/urandom')) { read($h, $b, $n); close $h } $b .= chr(int rand 256) while length $b < $n; $b }
 sub rnd_hex { unpack('H*', rnd_bytes(shift)) }
@@ -771,7 +771,7 @@ sub main_notice {
 sub leader { my $l = jdec(slurp("$SYNC/leader.json")); ref $l eq 'HASH' && $l->{id} ? $l : { id => node_id(), url => my_url() } }
 my $ALIAS_PID = 0;
 sub alias_on {    # publish schoolprinter.local -> this computer (child process lives while we are the main station)
-    return if $ALIAS_PID && kill 0, $ALIAS_PID;
+    return if $ENV{SP_NOMDNS} || ($ALIAS_PID && kill 0, $ALIAS_PID);    # SP_NOMDNS: test copies stay off the real network's Bonjour
     my ($ip) = my_url() =~ m{//([\d.]+):}; return unless $ip;
     my @cmd = $^O eq 'darwin' ? ('dns-sd', '-P', 'School Printer (web)', '_http._tcp', 'local', $PORT, $ALIAS, $ip, 'path=/')
             : which('avahi-publish') ? ('avahi-publish', '-a', '-R', $ALIAS, $ip) : ();
@@ -1131,6 +1131,7 @@ sub add_cmd {
         'if errorlevel 1 (', '  echo   Opening printer settings: press "Add device" and choose "School Printer".', '  start ms-settings:printers', ')', 'echo.', 'pause') . "\r\n";
 }
 sub announce {    # mDNS _ipp._tcp so the printer shows up in print dialogs; child process lives as long as we do
+    return 0 if $ENV{SP_NOMDNS};
     my %cf = get_cfg(); my $cp = caps($cf{printer});
     my @txt = ('txtvers=1', 'qtotal=1', 'rp=ipp/print', "ty=School Printer ($cf{printer})", 'product=(School Printer)', 'pdl=application/pdf,image/jpeg,image/png',
                'Color=' . (${ $cp->{color} } ? 'T' : 'F'), 'Duplex=' . (${ $cp->{duplex} } ? 'T' : 'F'), 'UUID=' . uuid(), "note=$HOSTNAME", "adminurl=http://$HOSTNAME:$PORT/");
