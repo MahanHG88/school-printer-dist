@@ -13,11 +13,11 @@
 # non-ASCII character: in a UTF-8 locale bash 3.2 reads "$MU·" as a variable named "MU·" (seen 2026-10-20).
 set -euo pipefail
 
-VERSION="1.7.6"
-BASE="https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.6/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+VERSION="1.7.7"
+BASE="https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.7/app"          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
 PACK=""          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
 PORT=8631
-FILES=("unix/schoolprinter.pl:42B3801022535BB3D65EC2000D6CAC52055DC18253772ADCA5A52129BC8300FE:131501" "unix/office-mac.sh:925C3A7BDDB69AACE64C5CC31676534B7AA1E83CFEF4C1F6A4EEFD1DDC1B9F14:4731" "web/admin.html:D22050CF088B853F3742DDAAC5A2F41F5FDC6F3A82C5EC69E663F6587906707E:9597" "web/admin.js:F9CE28AD474DB8C3B1F94E23081F393BD06A118A41BFB4CC4342B162FDAB9FF5:13758" "web/app.css:9E53C50430CDAF0158A29F6878B05B90A713AB3EE8A73E71274FF3AFAB751D77:24778" "web/i18n.js:58A236DE9A7D71B76B1CE435B5605C602116DD6AD06773C3BB063CA38E85C886:38929" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:52403BA74DDAE9EF2D59EDAD054AADFF31945A952D3DC86E6C55466934DD11F3:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
+FILES=("unix/schoolprinter.pl:57987CE27FAE2E5D97FDED5A913801A1A381F97724E5B5FD48A6C76783B360E0:131501" "unix/office-mac.sh:925C3A7BDDB69AACE64C5CC31676534B7AA1E83CFEF4C1F6A4EEFD1DDC1B9F14:4731" "web/admin.html:81FC9CB53500E4C15920EE8BE5DB5135922E122133626A3BB594A9EF78CEC2CB:9597" "web/admin.js:F9CE28AD474DB8C3B1F94E23081F393BD06A118A41BFB4CC4342B162FDAB9FF5:13758" "web/app.css:9E53C50430CDAF0158A29F6878B05B90A713AB3EE8A73E71274FF3AFAB751D77:24778" "web/i18n.js:58A236DE9A7D71B76B1CE435B5605C602116DD6AD06773C3BB063CA38E85C886:38929" "web/pdf.min.js:978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C:377116" "web/pdf.worker.min.js:38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2:1133660" "web/print.html:7735F2F65C0BCC515895DF624F3B355B28832EC8EED9127049E901CFFEF7C690:13876" "web/print.js:42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86:35529" "web/vazirmatn.woff2:4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92:111152")   # "path under /app/:SHA-256:bytes"  (filled in by build.sh)
 OS="$(uname -s)"
 if [ "$OS" = Darwin ]; then DIR="/Library/Application Support/SchoolPrinter"; else DIR="/opt/schoolprinter"; fi
 
@@ -117,7 +117,7 @@ HERE=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; fi
 if [ "$(id -u)" -ne 0 ]; then
     if [ -n "$HERE" ]; then echo "School Printer needs your password to install."; exec sudo bash "${BASH_SOURCE[0]}"; fi
-    echo "Run it with sudo:  curl -fsSL https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.6/install-ir.sh | sudo bash"; exit 1
+    echo "Run it with sudo:  curl -fsSL https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.7/install-ir.sh | sudo bash"; exit 1
 fi
 command -v perl >/dev/null || { echo "Perl is missing - install it (e.g. sudo apt install perl) and run this again."; exit 1; }
 tmpd="$(mktemp -d)"

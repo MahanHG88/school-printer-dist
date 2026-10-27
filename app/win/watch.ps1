@@ -181,7 +181,7 @@ while ($true) {
         Done-With @($file, $j.FullName)
     }
     foreach ($f in $loose) {    # Mac PDF menu / older senders
-        try { $h = [IO.File]::Open($f.FullName, 'Open', 'Read', 'None'); $h.Close() } catch { continue }
+        try { $fh = [IO.File]::Open($f.FullName, 'Open', 'Read', 'None'); $fh.Close() } catch { continue }    # not $h: PowerShell names ignore case, and $H is the print scale
         $s = $defaults.Clone()
         if ($f.BaseName -match '-c(\d+)$') { $s.copies = [Math]::Min([Math]::Max([int]$Matches[1], 1), 20) }
         $s = [pscustomobject]$s
