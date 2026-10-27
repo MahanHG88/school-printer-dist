@@ -238,7 +238,7 @@ sub do_print {    # in the request's worker, after the reply: settings -> lp opt
 # the password itself is never stored. Same protocol as sync.ps1/syncd.ps1 on Windows, so both mix in one network.
 my $SYNC = "$DIR/Sync"; my $STD = "$SYNC/st"; my $JOBS = "$SYNC/jobs"; my $SCANS = "$SYNC/scans"; my $HELD = "$SYNC/held"; my $ALIAS = 'schoolprinter.local';
 my $HAS_SHA = eval { require Digest::SHA; 1 } ? 1 : 0;
-my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.4'; my $FRESH = 25;
+my $PROTO = 2; my $MAXNODES = 50; my $VERSION = '1.7.5'; my $FRESH = 25;
 
 sub rnd_bytes { my $n = shift; my $b = ''; if (open(my $h, '<:raw', '/dev/urandom')) { read($h, $b, $n); close $h } $b .= chr(int rand 256) while length $b < $n; $b }
 sub rnd_hex { unpack('H*', rnd_bytes(shift)) }
@@ -724,7 +724,7 @@ sub worker {
         my $t0 = Time::HiRes::time();
         eval { uptime_tick() };
         if (time - $last_det >= 60) { $last_det = time; eval { detect_scanners() } }
-        eval { spit("$SYNC/self.json", json(self_status())) };
+        eval { my $ss = self_status(); $ss->{rev} = rev_tick($ss); spit("$SYNC/self.json", json($ss)) };
         if (group() && time - $last_bw >= 300) { $last_bw = (eval { measure_bw() } ? time : time - 280) }    # failed: again in 20 s
         if (group()) {
             if ($scan_pid && waitpid($scan_pid, WNOHANG)) { $scan_pid = 0 }
@@ -753,6 +753,17 @@ sub worker {
 # the job until another one is clearly better (25 %), so the address does not flip back and forth.
 our (%SINCE, $JOINED_AT, $SINCE_GID); $JOINED_AT = time; $SINCE_GID = '';
 sub lead_score { my $s = shift; my $bw = $s->{bw} || 0; log(1 + $bw) / log(2) * 2 + ($s->{cores} || 1) * (100 - ($s->{cpu} || 0)) / 100 + (($s->{memFree} || 0) > 8192 ? 8192 : ($s->{memFree} || 0)) / 2048 }
+our (@REV, $REV_BLOCK, $REV_BUCKET, $REV_OUT);
+sub rev_tick {    # the 5-minute review: this station's score 6 times in the block's first minute (every 10 s) -> its average
+    my $s = shift; my $t = time; my $o = $t % 300; my $blk = $t - $o;
+    if ($o < 60) {
+        if (!defined $REV_BLOCK || $REV_BLOCK != $blk) { ($REV_BLOCK, $REV_BUCKET, @REV) = ($blk, -1) }
+        my $b = int($o / 10); if ($b != $REV_BUCKET) { $REV_BUCKET = $b; push @REV, lead_score(jdec(json($s))) }    # plain numbers (N() values are objects)
+    } elsif (defined $REV_BLOCK && $REV_BLOCK == $blk && @REV) {
+        my $sum = 0; $sum += $_ for @REV; $REV_OUT = { at => N($blk), avg => N(sprintf('%.3f', $sum / @REV)), n => N(scalar @REV) };
+    }
+    $REV_OUT;
+}
 sub elect {    # -> (id, url) of the main station
     my $me = self_cached(); my @c = ({ id => node_id(), url => my_url(), s => $me });
     push @c, map { { id => $_->{id}, url => $_->{url}, s => $_->{s} } } grep { $_->{online} } stations() if group();
@@ -769,9 +780,15 @@ sub elect {    # -> (id, url) of the main station
     # otherwise keep the main station most stations follow while it is not clearly worse (no flapping)
     my $fresh = time - $JOINED_AT < 90 || grep { defined $SINCE{$_->{id}} && time - $SINCE{$_->{id}} < 90 } @c;
     my $l = (!$fresh && $keep && $keep->{score} >= $best->{score} * 0.75) ? $keep : $best;
-    # every 5 minutes (the same 20 seconds on every station's clock) a review with live load: a main station that has
-    # become busy (another program started) hands over to a station at least half a point better
-    $l = $best if time % 300 < 20 && $best->{rank} > $l->{rank};
+    # every 5 minutes an election minute: 6 rounds, 10 s apart, in which every station measures its power; each shares the
+    # average (rev), and in the 20 s after the minute every station holds the final election on the same averages, so all
+    # agree. A main station that has become busy (another program started) hands over to the most powerful on average.
+    my $o = time % 300; my $blk = time - $o;
+    if ($o >= 65 && $o < 85) {
+        for (@c) { my $r = $_->{s}{rev}; $_->{arank} = (ref $r eq 'HASH' && ($r->{at} || 0) == $blk && ($r->{n} || 0) >= 3) ? int($r->{avg} * 2 + .5) : $_->{rank} }
+        my ($ab) = sort { $b->{arank} <=> $a->{arank} || $b->{up} <=> $a->{up} || $a->{lot} cmp $b->{lot} } @c;
+        $l = $ab if $ab->{id} ne $l->{id} && $ab->{arank} > $l->{arank};    # the most powerful on average; equal (to half a point): the main station stays
+    }
     my $cur = jdec(slurp("$SYNC/leader.json"));
     spit("$SYNC/leader.json", json({ id => $l->{id}, url => $l->{url} })) unless ref $cur eq 'HASH' && ($cur->{id} || '') eq $l->{id} && ($cur->{url} || '') eq $l->{url};
     ($l->{id}, $l->{url});

@@ -17,8 +17,8 @@
 function Install-SchoolPrinter {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
-    $Version = '1.7.4'
-    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.4/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
+    $Version = '1.7.5'
+    $Base    = 'https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.5/app'          # direct: print.mahanmirzaee.com  |  -ir: jsDelivr mirror (fast inside Iran)
     $Pack    = ''          # -rf: every file in one npm package through Runflare's npm mirror (Iran); else empty
     $Root    = 'C:\ProgramData\MacPrint'
     $Port    = 8631
@@ -28,21 +28,21 @@ function Install-SchoolPrinter {
         'win/convert.ps1' = @('B927921C187A6DB910CC22ADFB8D504EEEBD23BE555FC18C43FEB6D9072ECCA5', 5781)
         'win/ipp.ps1' = @('037153FEF862F76BBF72CB0AE6D1B2BBF695E5F45E6069EB2292D659FA3CF6FA', 23063)
         'win/sync.ps1' = @('3E4713843A27D61729FE74FD964F7484419B608A839F61FC1A4865BDEE4C588C', 45035)
-        'win/syncd.ps1' = @('50E34BE937A940BFE60BA95AF132F3AA35EB569CC18002F7DD258E8A42186033', 40730)
+        'win/syncd.ps1' = @('BED6380E4775D04D2D0DC27FB6D225E3AABF28A04085CB9C77BE57AA555FA7D6', 42202)
         'win/dns.ps1' = @('409515475605CF8E4B245B8B593BB2D6FE86708017C774DC55A886139CBCA9EB', 5293)
         'win/control.ps1' = @('4B98219C7F23117F8CEB00EFBBE863D37253A07105C60C3F837E5EB758E560CF', 1863)
         'win/notice.ps1' = @('605B260242A2049307402C93E557C3D1087848FFDDD6B5650FCBE292DEBF692F', 3349)
-        'web/admin.html' = @('671E99BA73CDD19A62B7E41CB72EA0DFD2B67FF6B8AC376A638FD4B944A2A5BC', 9597)
+        'web/admin.html' = @('E10FC55B745F0C637F2DEA18068D0A8EA6F6A5E9A0201B43871FB7D93EF0A846', 9597)
         'web/admin.js' = @('F9CE28AD474DB8C3B1F94E23081F393BD06A118A41BFB4CC4342B162FDAB9FF5', 13758)
         'web/app.css' = @('9E53C50430CDAF0158A29F6878B05B90A713AB3EE8A73E71274FF3AFAB751D77', 24778)
         'web/i18n.js' = @('58A236DE9A7D71B76B1CE435B5605C602116DD6AD06773C3BB063CA38E85C886', 38929)
         'web/pdf.min.js' = @('978FD1B2D134A98E98966186A97777BEBF87D8E770DADAB1ECE3687E21A5AA6C', 377116)
         'web/pdf.worker.min.js' = @('38CDE5311957B86BC3669F93E7D2566DE333A90055ED6635BEF60D9BF00E96F2', 1133660)
-        'web/print.html' = @('0721F936F030F01193C436BC1662854E51E934C6F600AFEF6BF7E006AB323B9C', 13876)
+        'web/print.html' = @('6026C274FDF45A13602CC66DD320905C971A39AB03C9276D10DB42E37564F437', 13876)
         'web/print.js' = @('42F4152BD637ABF3255C0B5E309E4B9DA2B9969958B848834980FEDF12D1FB86', 35529)
         'web/vazirmatn.woff2' = @('4E3FA217D38FDAFC1FEA4414CEB58CA5E662CF0AB5FA735A8C8C20E8B42CAD92', 111152)
     }
-    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.4/install-ir.ps1'))"
+    $OneLiner = "[Net.ServicePointManager]::SecurityProtocol=3072; iex ((New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/MahanHG88/school-printer-dist@v1.7.5/install-ir.ps1'))"
 
     # ================================================================ look: live dashboard
     $E = [char]27

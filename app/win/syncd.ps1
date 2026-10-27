@@ -104,7 +104,7 @@ function Self-Status {
     $os = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
     $office = Sp-LocalOffice; $busy = @(Get-ChildItem $SpUp -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.todo', '.doing' }).Count
     $open = $c.open -ne '0'; $u = Sp-Read (Join-Path $SpSync 'uptime.json')
-    [ordered]@{ app = 'school-printer'; proto = 2; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.7.4'
+    [ordered]@{ app = 'school-printer'; proto = 2; id = (Sp-NodeId); name = $env:COMPUTERNAME; station = (Sp-StationName $c); version = '1.7.5'
         open = $open; ready = ($open -and $pst -eq 'Normal'); accept = ($c.accept -ne '0'); printer = $pr; pstatus = $pst
         jobs = ($spool.Count + $inb.Count); queue = $sheets; color = [bool]$caps.color; duplex = [bool]$caps.duplex; papers = @($caps.papers)
         conv = [ordered]@{ ok = ($office -in 'office', 'lo'); kind = $office; busy = $busy; share = ($c.conv -ne '0') }
@@ -201,6 +201,17 @@ function Measure-Bw {    # fetch 1 MB from a random station; keep the last 5 res
     Sp-Write $f @($v); $true
 }
 function Lead-Score($s) { $bw = [double]$s.bw; [math]::Log(1 + $bw, 2) * 2 + [math]::Max(1, [int]$s.cores) * (100 - [double]$s.cpu) / 100 + [math]::Min([double]$s.memFree, 8192) / 2048 }
+$script:rev = @(); $script:revBlock = -1; $script:revBucket = -1; $script:revOut = $null
+function Rev-Tick($s) {    # the 5-minute review: this station's score 6 times in the block's first minute (every 10 s) -> its average
+    $t = Sp-Now; $o = $t % 300; $blk = $t - $o
+    if ($o -lt 60) {
+        if ($script:revBlock -ne $blk) { $script:revBlock = $blk; $script:revBucket = -1; $script:rev = @() }
+        $b = [int][math]::Floor($o / 10); if ($b -ne $script:revBucket) { $script:revBucket = $b; $script:rev += Lead-Score $s }
+    } elseif ($script:revBlock -eq $blk -and $script:rev.Count) {
+        $script:revOut = [ordered]@{ at = $blk; avg = [math]::Round(($script:rev | Measure-Object -Average).Average, 3); n = $script:rev.Count }
+    }
+    $script:revOut
+}
 function Elect {    # the main station, the same way on every station (see elect in schoolprinter.pl)
     $self = Sp-Self; if (-not $self) { return (Sp-NodeId) }
     $g = Sp-Group; $gid = if ($g) { [string]$g.gid } else { '' }
@@ -223,9 +234,15 @@ function Elect {    # the main station, the same way on every station (see elect
     if ($now - $script:joinedAt -lt 90) { $fresh = $true }
     foreach ($k in $c) { if ($script:since.ContainsKey($k.id) -and $now - $script:since[$k.id] -lt 90) { $fresh = $true } }
     $l = if (-not $fresh -and $keep -and $keep.score -ge $best.score * 0.75) { $keep } else { $best }
-    # every 5 minutes (the same 20 seconds on every station's clock) a review with live load: a main station that has
-    # become busy (another program started) hands over to a station at least half a point better
-    if ($now % 300 -lt 20 -and $best.rank -gt $l.rank) { $l = $best }
+    # every 5 minutes an election minute: 6 rounds, 10 s apart, in which every station measures its power; each shares the
+    # average (rev), and in the 20 s after the minute every station holds the final election on the same averages, so all
+    # agree. A main station that has become busy (another program started) hands over to the most powerful on average.
+    $o = $now % 300; $blk = $now - $o
+    if ($o -ge 65 -and $o -lt 85) {
+        foreach ($k in $c) { $r = $k.s.rev; $k.arank = if ($r -and [int64]$r.at -eq $blk -and [int]$r.n -ge 3) { [int][math]::Floor([double]$r.avg * 2 + 0.5) } else { $k.rank } }
+        $ab = @($c | Sort-Object @{ e = { $_.arank }; Descending = $true }, @{ e = { $_.up }; Descending = $true }, @{ e = { $_.lot }; Descending = $false })[0]
+        if ($ab.id -ne $l.id -and $ab.arank -gt $l.arank) { $l = $ab }    # the most powerful on average; equal (to half a point): the main station stays
+    }
     $cur = Sp-Read (Join-Path $SpSync 'leader.json')
     if (-not $cur -or [string]$cur.id -ne $l.id -or [string]$cur.url -ne $l.url) { Sp-Write (Join-Path $SpSync 'leader.json') ([ordered]@{ id = $l.id; url = $l.url }) }
     $l.id
@@ -484,7 +501,7 @@ while ($true) {
     $t0 = Get-Date
     try { Uptime-Tick } catch {}
     if (($t0 - $lastDet).TotalSeconds -ge 60) { $lastDet = $t0; try { Find-Scanners } catch {} }
-    try { Sp-Write (Join-Path $SpSync 'self.json') (Self-Status) } catch {}
+    try { $ss = Self-Status; $ss.rev = Rev-Tick $ss; Sp-Write (Join-Path $SpSync 'self.json') $ss } catch {}
     if (Sp-Group) {
         $now = Join-Path $SpSync 'scan-now'
         $every = if (((Get-Date) - $started).TotalSeconds -lt 180) { 15 } else { 60 }    # the first 3 minutes: look often, stations start at different times
